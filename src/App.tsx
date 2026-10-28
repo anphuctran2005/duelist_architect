@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Ban,
@@ -20,16 +20,20 @@ import {
   Image as ImageIcon,
   Languages,
   Layers,
+  LayoutGrid,
   MessageSquare,
+  Moon,
   Plus,
   RotateCcw,
   Sparkles,
+  Sun,
   Trash2,
   Wand2,
   X,
 } from 'lucide-react';
 import { CardArtwork } from './components/CardArtwork';
 import { CardDatabaseView } from './components/CardDatabaseView';
+import { DeckPlaybookGuide } from './components/DeckPlaybookGuide';
 import { DuelistCoachDrawer } from './components/DuelistCoachDrawer';
 import { MasterDuelImportGuide } from './components/MasterDuelImportGuide';
 import {
@@ -89,11 +93,45 @@ export default function App() {
   );
   const [rightDockMode, setRightDockMode] = useState<'inspector' | 'coach' | 'recent'>('recent');
 
-  // Mobile Bottom Sheets State (< 1024px)
+  // Mobile Bottom Sheets & Ergonomics State (< 1024px)
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
   const [mobileCoachOpen, setMobileCoachOpen] = useState(false);
   const [mobileRecentOpen, setMobileRecentOpen] = useState(false);
   const [mobilePromptCollapsed, setMobilePromptCollapsed] = useState(false);
+  const [mobileGridCols, setMobileGridCols] = useState<3 | 4>(3);
+
+  // Light / Dark Theme Mode (Defaulting to Light Mode as requested)
+  const [themeMode, setThemeMode] = useState<'light' | 'dark'>(() => {
+    try {
+      const saved = localStorage.getItem('duelist_architect_theme_mode');
+      if (saved === 'dark' || saved === 'light') return saved;
+    } catch {
+      // Ignore storage error
+    }
+    return 'light';
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('duelist_architect_theme_mode', themeMode);
+    } catch {
+      // Ignore storage error
+    }
+    if (typeof document !== 'undefined') {
+      document.body.style.backgroundColor = themeMode === 'light' ? '#F4F6FA' : '#0B0F17';
+      document.body.style.color = themeMode === 'light' ? '#0F172A' : '#F1F5F9';
+    }
+  }, [themeMode]);
+
+  const scrollToSection = (sectionId: string) => {
+    setActiveTab('builder');
+    setTimeout(() => {
+      const el = document.getElementById(sectionId);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 60);
+  };
 
   // AI Deck Constructor Form State
   const [promptInput, setPromptInput] = useState('');
@@ -504,9 +542,13 @@ export default function App() {
 
   return (
     <LanguageContext.Provider value={{ lang, setLang }}>
-      <div className="min-h-screen flex flex-col bg-[#0B0F17] text-[#F1F5F9]">
+      <div
+        className={`min-h-screen flex flex-col bg-[#0B0F17] text-[#F1F5F9] transition-colors ${
+          themeMode === 'light' ? 'theme-light' : 'theme-dark'
+        }`}
+      >
         {/* Strict 3-Zone Top Bar Contract (Compact 48px on Mobile, Full 3-Zone on Desktop) */}
-        <header className="sticky top-0 z-30 h-12 sm:h-14 flex items-center justify-between gap-4 sm:gap-8 px-4 sm:px-6 bg-[#0B0F17]/95 backdrop-blur border-b border-slate-800/90">
+        <header className="sticky top-0 z-30 h-12 sm:h-14 flex items-center justify-between gap-3 sm:gap-8 px-3.5 sm:px-6 bg-[#0B0F17]/95 backdrop-blur border-b border-slate-800/90">
           {/* Zone 1: Single-line Brand Wordmark */}
           <a
             href="#top"
@@ -580,16 +622,43 @@ export default function App() {
           </div>
         </header>
 
-        {/* Non-Sticky Sub-Header Workspace Toolbar with Vietnamese / English Language Switcher */}
-        <div className="bg-[#0E1422] border-b border-slate-800/70 px-4 sm:px-6 py-2">
-          <div className="max-w-[1400px] mx-auto flex items-center justify-between gap-3 text-xs">
-            <div className="text-slate-400 font-mono tabular-nums truncate">
-              {isVi
-                ? `${deck.name} · ${mainCount} Main / ${extraCount} Extra`
-                : `${deck.name} · ${mainCount} Main / ${extraCount} Extra`}
+        {/* Sub-Header Workspace Toolbar with Light/Dark Theme Switcher, Recent Decks, Excel & Language (Horizontally Scrollable on Mobile) */}
+        <div className="bg-[#0E1422] border-b border-slate-800/70 px-3.5 sm:px-6 py-2">
+          <div className="max-w-[1400px] mx-auto flex items-center justify-between gap-2.5 text-xs overflow-x-auto no-scrollbar">
+            <div className="hidden lg:block text-slate-400 font-mono tabular-nums truncate">
+              {`${deck.name} · ${mainCount} Main / ${extraCount} Extra`}
             </div>
 
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 ml-auto">
+              {/* Light / Dark Theme Mode Toggle */}
+              <button
+                type="button"
+                onClick={() => setThemeMode((m) => (m === 'light' ? 'dark' : 'light'))}
+                className="min-h-[34px] px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 hover:border-amber-400 text-slate-200 text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0"
+              >
+                {themeMode === 'light' ? (
+                  <>
+                    <Sun className="w-3.5 h-3.5 text-amber-500" />
+                    <span>{isVi ? 'Nền Sáng' : 'Light Mode'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Moon className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{isVi ? 'Nền Tối' : 'Dark Mode'}</span>
+                  </>
+                )}
+              </button>
+
+              {/* Quick Jump to How-To-Play Playbook */}
+              <button
+                type="button"
+                onClick={() => scrollToSection('deck-playbook-section')}
+                className="min-h-[34px] px-2.5 py-1 rounded-lg bg-amber-400/15 border border-amber-400/40 hover:border-amber-400 text-amber-300 text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0"
+              >
+                <BookOpen className="w-3.5 h-3.5 text-amber-400" />
+                <span>{isVi ? 'Cách Chơi Deck' : 'How to Play'}</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => {
@@ -597,51 +666,48 @@ export default function App() {
                   setRightDockMode('recent');
                   setMobileRecentOpen(true);
                 }}
-                className="min-h-[32px] px-2.5 py-1 rounded-lg bg-amber-400/15 border border-amber-400/40 hover:border-amber-400 text-amber-300 text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                className="min-h-[34px] px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 hover:border-amber-400 text-slate-200 text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0"
               >
                 <History className="w-3.5 h-3.5 text-amber-400" />
                 <span>
                   {isVi
-                    ? `Deck Gần Đây (${recentDecks.length}/5)`
-                    : `Recent Decks (${recentDecks.length}/5)`}
+                    ? `Gần Đây (${recentDecks.length}/5)`
+                    : `Recent (${recentDecks.length}/5)`}
                 </span>
               </button>
 
               <button
                 type="button"
                 onClick={() => exportDeckToExcel(deck, lang, translatedEffects)}
-                className="min-h-[32px] px-2.5 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/40 hover:border-emerald-400 text-emerald-300 text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                className="min-h-[34px] px-2.5 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/40 hover:border-emerald-400 text-emerald-300 text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0"
               >
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
-                <span>{isVi ? 'Xuất Excel (.xlsx)' : 'Export Excel (.xlsx)'}</span>
+                <span>{isVi ? 'Xuất Excel' : 'Excel (.xlsx)'}</span>
               </button>
 
-              <div className="flex items-center gap-1.5 shrink-0">
-                <Globe className="w-3.5 h-3.5 text-amber-400 hidden sm:block" />
-                <div className="flex items-center gap-1 p-0.5 bg-slate-900 border border-slate-800 rounded-lg">
-                  <button
-                    type="button"
-                    onClick={() => setLang('vi')}
-                    className={`min-h-[32px] px-2.5 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                      lang === 'vi'
-                        ? 'bg-amber-400 text-slate-950 font-semibold'
-                        : 'text-slate-300 hover:text-white'
-                    }`}
-                  >
-                    Tiếng Việt
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLang('en')}
-                    className={`min-h-[32px] px-2.5 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                      lang === 'en'
-                        ? 'bg-amber-400 text-slate-950 font-semibold'
-                        : 'text-slate-300 hover:text-white'
-                    }`}
-                  >
-                    English
-                  </button>
-                </div>
+              <div className="flex items-center gap-1 p-0.5 bg-slate-900 border border-slate-800 rounded-lg shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setLang('vi')}
+                  className={`min-h-[30px] px-2 py-0.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                    lang === 'vi'
+                      ? 'bg-amber-400 text-slate-950 font-semibold'
+                      : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  VI
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLang('en')}
+                  className={`min-h-[30px] px-2 py-0.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                    lang === 'en'
+                      ? 'bg-amber-400 text-slate-950 font-semibold'
+                      : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  EN
+                </button>
               </div>
             </div>
           </div>
@@ -672,9 +738,42 @@ export default function App() {
           )}
 
           {activeTab === 'builder' && (
-            <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-5 sm:space-y-6">
+            <div className="max-w-[1400px] mx-auto px-3 sm:px-6 py-3.5 sm:py-6 space-y-4 sm:space-y-6">
+              {/* Mobile Quick-Jump Pill Bar (< 640px) for Thumb-Zone Ergonomics */}
+              <div className="sm:hidden flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+                <button
+                  type="button"
+                  onClick={() => scrollToSection('main-deck-section')}
+                  className="min-h-[36px] px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-semibold text-slate-200 whitespace-nowrap shrink-0"
+                >
+                  {isVi ? `🃏 Main (${mainCount})` : `🃏 Main (${mainCount})`}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollToSection('extra-deck-section')}
+                  className="min-h-[36px] px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-semibold text-slate-200 whitespace-nowrap shrink-0"
+                >
+                  {isVi ? `✨ Extra (${extraCount})` : `✨ Extra (${extraCount})`}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollToSection('deck-playbook-section')}
+                  className="min-h-[36px] px-3 py-1.5 rounded-xl bg-amber-400 text-slate-950 text-xs font-bold whitespace-nowrap shrink-0 flex items-center gap-1"
+                >
+                  <BookOpen className="w-3.5 h-3.5" />
+                  <span>{isVi ? 'Hướng Dẫn Cách Chơi' : 'How to Play'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileRecentOpen(true)}
+                  className="min-h-[36px] px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-semibold text-slate-200 whitespace-nowrap shrink-0"
+                >
+                  {isVi ? `🕒 5 Deck Gần Đây` : `🕒 Recent (${recentDecks.length})`}
+                </button>
+              </div>
+
               {/* Top AI Natural Language Deck Constructor Panel (Collapsible on Mobile) */}
-              <section className="p-4 sm:p-6 rounded-2xl sm:rounded-xl bg-[#111827] border border-slate-800 space-y-4">
+              <section className="p-3.5 sm:p-6 rounded-2xl sm:rounded-xl bg-[#111827] border border-slate-800 space-y-3.5 sm:space-y-4">
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 sm:gap-4">
                   <div className="flex items-start justify-between gap-2">
                     <div className="space-y-1">
@@ -918,6 +1017,15 @@ export default function App() {
 
                         <button
                           type="button"
+                          onClick={() => scrollToSection('deck-playbook-section')}
+                          className="min-h-[42px] px-3.5 py-1.5 text-xs font-semibold text-amber-300 bg-amber-400/15 border border-amber-400/50 hover:bg-amber-400 hover:text-slate-950 active:scale-[0.98] rounded-xl sm:rounded-lg transition-all flex items-center justify-center gap-1.5 whitespace-nowrap"
+                        >
+                          <BookOpen className="w-3.5 h-3.5" />
+                          <span>{isVi ? 'Hướng Dẫn Cách Chơi' : 'How to Play Guide'}</span>
+                        </button>
+
+                        <button
+                          type="button"
                           onClick={() => exportDeckToExcel(deck, lang, translatedEffects)}
                           className="min-h-[42px] px-3.5 py-1.5 text-xs font-semibold text-emerald-300 bg-emerald-500/15 border border-emerald-500/40 hover:bg-emerald-500/25 hover:border-emerald-400 active:scale-[0.98] rounded-xl sm:rounded-lg transition-all flex items-center justify-center gap-1.5 whitespace-nowrap"
                         >
@@ -930,7 +1038,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => setActiveTab('import_guide')}
-                          className="min-h-[42px] px-3.5 py-1.5 text-xs font-semibold text-slate-950 bg-amber-400 hover:bg-amber-300 active:scale-[0.98] rounded-xl sm:rounded-lg transition-all whitespace-nowrap"
+                          className="min-h-[42px] px-3.5 py-1.5 text-xs font-semibold text-slate-950 bg-amber-400 hover:bg-amber-300 active:scale-[0.98] rounded-xl sm:rounded-lg transition-all whitespace-nowrap col-span-2 sm:col-span-1"
                         >
                           {isVi ? 'Cách Nhập Game' : 'How to Import'}
                         </button>
@@ -1134,7 +1242,10 @@ export default function App() {
                   )}
 
                   {/* Main Deck Visual Card Table */}
-                  <div className="relative rounded-2xl sm:rounded-xl overflow-hidden border border-slate-800 bg-[#0D1322] p-4 sm:p-5 space-y-3.5 sm:space-y-4">
+                  <div
+                    id="main-deck-section"
+                    className="relative rounded-2xl sm:rounded-xl overflow-hidden border border-slate-800 bg-[#0D1322] p-3.5 sm:p-5 space-y-3.5 sm:space-y-4"
+                  >
                     {deck.customPlaymatUrl && (
                       <img
                         src={deck.customPlaymatUrl}
@@ -1153,21 +1264,38 @@ export default function App() {
                         </h3>
                         <p className="text-[11px] text-slate-400 sm:hidden">
                           {isVi
-                            ? 'Chạm vào lá bài bất kỳ để xem hiệu ứng & chỉnh số lượng'
+                            ? 'Chạm vào lá bài để xem Tiếng Việt & chỉnh số lượng'
                             : 'Tap any card to inspect & adjust quantity'}
                         </p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab('database')}
-                        className="min-h-[36px] px-2.5 py-1 rounded-lg bg-slate-900/90 border border-slate-700 text-xs text-amber-400 hover:border-amber-400 flex items-center gap-1 whitespace-nowrap shrink-0"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>{isVi ? 'Thêm Bài' : 'Add Cards'}</span>
-                      </button>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {/* Mobile Grid Size Switcher (3-Col Large vs 4-Col Compact) */}
+                        <button
+                          type="button"
+                          onClick={() => setMobileGridCols((c) => (c === 3 ? 4 : 3))}
+                          className="sm:hidden min-h-[36px] px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-xs text-slate-200 flex items-center gap-1 whitespace-nowrap"
+                        >
+                          <LayoutGrid className="w-3.5 h-3.5 text-amber-400" />
+                          <span>{mobileGridCols === 3 ? '3 Cột' : '4 Cột'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('database')}
+                          className="min-h-[36px] px-2.5 py-1 rounded-lg bg-slate-900/90 border border-slate-700 text-xs text-amber-400 hover:border-amber-400 flex items-center gap-1 whitespace-nowrap shrink-0"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>{isVi ? 'Thêm Bài' : 'Add Cards'}</span>
+                        </button>
+                      </div>
                     </div>
 
-                    <div className="relative z-10 grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 gap-2 sm:gap-3">
+                    <div
+                      className={`relative z-10 grid ${
+                        mobileGridCols === 4 ? 'grid-cols-4' : 'grid-cols-3'
+                      } sm:grid-cols-5 md:grid-cols-6 gap-2 sm:gap-3`}
+                    >
                       {mainEntries.map((entry) => (
                         <CardArtwork
                           key={`main-${entry.card.id}`}
@@ -1196,7 +1324,10 @@ export default function App() {
                   </div>
 
                   {/* Extra Deck Visual Card Table */}
-                  <div className="rounded-2xl sm:rounded-xl border border-slate-800 bg-[#0D1322] p-4 sm:p-5 space-y-3.5 sm:space-y-4">
+                  <div
+                    id="extra-deck-section"
+                    className="rounded-2xl sm:rounded-xl border border-slate-800 bg-[#0D1322] p-3.5 sm:p-5 space-y-3.5 sm:space-y-4"
+                  >
                     <div className="flex items-center justify-between gap-2">
                       <h3 className="text-xs sm:text-sm font-semibold text-slate-100 font-mono tabular-nums">
                         {isVi
@@ -1205,7 +1336,11 @@ export default function App() {
                       </h3>
                     </div>
 
-                    <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 gap-2 sm:gap-3">
+                    <div
+                      className={`grid ${
+                        mobileGridCols === 4 ? 'grid-cols-4' : 'grid-cols-3'
+                      } sm:grid-cols-5 md:grid-cols-6 gap-2 sm:gap-3`}
+                    >
                       {extraEntries.map((entry) => (
                         <CardArtwork
                           key={`extra-${entry.card.id}`}
@@ -1233,26 +1368,15 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Step-by-Step Combo & Execution Guide */}
-                  {deck.comboGuide && deck.comboGuide.length > 0 && (
-                    <div className="p-4 sm:p-5 rounded-2xl sm:rounded-xl bg-[#111827] border border-slate-800 space-y-3">
-                      <div className="flex items-center gap-2">
-                        <BookOpen className="w-4 h-4 text-amber-400" />
-                        <h3 className="text-sm font-semibold text-slate-100">
-                          {isVi
-                            ? '03. Chuỗi Combo Cốt Lõi & Hướng Dẫn Vận Hành'
-                            : '03. Core Master Duel Combo Sequence & Playbook'}
-                        </h3>
-                      </div>
-                      <div className="divide-y divide-slate-800/80">
-                        {deck.comboGuide.map((step, idx) => (
-                          <div key={idx} className="py-2.5 text-xs text-slate-300 leading-relaxed">
-                            {step}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  {/* 03. Interactive How-To-Play Playbook & Tactical Guide for the Newly Created Deck */}
+                  <DeckPlaybookGuide
+                    deck={deck}
+                    onSelectEntry={(entry) => {
+                      setSelectedEntry(entry);
+                      setRightDockMode('inspector');
+                      setMobileInspectorOpen(true);
+                    }}
+                  />
                 </div>
 
                 {/* Desktop Right 4 Columns: Recent Decks Sidebar, Card Passcode Inspector & Free AI Duelist Coach */}
