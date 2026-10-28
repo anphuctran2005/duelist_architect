@@ -66,7 +66,13 @@ export interface DeckState {
   customPlaymatUrl?: string;
 }
 
-export type GeminiModelTier = 'gemini-4-argon' | 'gemini-3.8-flash' | 'gemini-3.1-flash-lite';
+export type GeminiModelTier =
+  | 'gpt-oss-20b-free'
+  | 'llama-3.3-70b-free'
+  | 'qwen-2.5-72b-free'
+  | 'gemini-4-argon'
+  | 'gemini-3.8-flash'
+  | 'gemini-3.1-flash-lite';
 
 export type ChatPersonaId = 'combo_strategist' | 'meta_analyst' | 'budget_optimizer';
 

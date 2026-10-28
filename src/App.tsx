@@ -5,6 +5,8 @@
 
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
+  Ban,
   BookOpen,
   ChevronDown,
   ChevronUp,
@@ -14,6 +16,7 @@ import {
   FileCode2,
   FileSpreadsheet,
   Globe,
+  History,
   Image as ImageIcon,
   Languages,
   Layers,
@@ -29,6 +32,13 @@ import { CardArtwork } from './components/CardArtwork';
 import { CardDatabaseView } from './components/CardDatabaseView';
 import { DuelistCoachDrawer } from './components/DuelistCoachDrawer';
 import { MasterDuelImportGuide } from './components/MasterDuelImportGuide';
+import {
+  RecentDecksSidebar,
+  RecentDeckRecord,
+  loadRecentDecksFromStorage,
+  saveRecentDecksToStorage,
+  upsertRecentDeckRecord,
+} from './components/RecentDecksSidebar';
 import { VisualStudioView } from './components/VisualStudioView';
 import { INITIAL_VISUAL_ASSETS, STARTER_DECKS } from './data/starterDecks';
 import {
@@ -61,22 +71,29 @@ export default function App() {
   const isVi = lang === 'vi';
 
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('builder');
-  const [deck, setDeck] = useState<DeckState>(STARTER_DECKS[0]);
-  const [selectedEntry, setSelectedEntry] = useState<DeckEntry | null>(
-    STARTER_DECKS[0].entries[0] || null
+  const [recentDecks, setRecentDecks] = useState<RecentDeckRecord[]>(() =>
+    loadRecentDecksFromStorage(STARTER_DECKS)
   );
-  const [rightDockMode, setRightDockMode] = useState<'inspector' | 'coach'>('coach');
+  const [deck, setDeck] = useState<DeckState>(
+    () => loadRecentDecksFromStorage(STARTER_DECKS)[0]?.deck || STARTER_DECKS[0]
+  );
+  const [selectedEntry, setSelectedEntry] = useState<DeckEntry | null>(
+    () =>
+      (loadRecentDecksFromStorage(STARTER_DECKS)[0]?.deck || STARTER_DECKS[0]).entries[0] || null
+  );
+  const [rightDockMode, setRightDockMode] = useState<'inspector' | 'coach' | 'recent'>('recent');
 
   // Mobile Bottom Sheets State (< 1024px)
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
   const [mobileCoachOpen, setMobileCoachOpen] = useState(false);
+  const [mobileRecentOpen, setMobileRecentOpen] = useState(false);
   const [mobilePromptCollapsed, setMobilePromptCollapsed] = useState(false);
 
   // AI Deck Constructor Form State
   const [promptInput, setPromptInput] = useState('');
   const [playstyle, setPlaystyle] = useState('Competitive Midrange');
   const [budgetTier, setBudgetTier] = useState('Competitive (No UR Limit)');
-  const [builderModel, setBuilderModel] = useState<GeminiModelTier>('gemini-4-argon');
+  const [builderModel, setBuilderModel] = useState<GeminiModelTier>('gpt-oss-20b-free');
   const [isConstructingDeck, setIsConstructingDeck] = useState(false);
   const [constructionStage, setConstructionStage] = useState('');
   const [builderBannerNote, setBuilderBannerNote] = useState<string | null>(null);
@@ -133,6 +150,55 @@ export default function App() {
 
   const { neededCP } = useMemo(() => calculateCraftingPoints(deck.entries), [deck.entries]);
 
+  // Master Duel Banlist Visual Summary & Violation Detection
+  const banlistStats = useMemo(() => {
+    let forbiddenCards = 0;
+    let limitedCards = 0;
+    let semiLimitedCards = 0;
+    const violations: { card: YgoCard; quantity: number; maxAllowed: number }[] = [];
+
+    for (const entry of deck.entries) {
+      const status = entry.card.banlistStatus;
+      const maxAllowed = getMaxAllowedCopies(status);
+      if (status === 'Forbidden') {
+        forbiddenCards += entry.quantity;
+      } else if (status === 'Limited') {
+        limitedCards += entry.quantity;
+      } else if (status === 'Semi-Limited') {
+        semiLimitedCards += entry.quantity;
+      }
+      if (entry.quantity > maxAllowed) {
+        violations.push({
+          card: entry.card,
+          quantity: entry.quantity,
+          maxAllowed,
+        });
+      }
+    }
+
+    return {
+      forbiddenCards,
+      limitedCards,
+      semiLimitedCards,
+      violations,
+    };
+  }, [deck.entries]);
+
+  const handleAutoFixBanlist = () => {
+    setDeck((prev) => {
+      const fixedEntries: DeckEntry[] = [];
+      for (const entry of prev.entries) {
+        const maxAllowed = getMaxAllowedCopies(entry.card.banlistStatus);
+        if (maxAllowed <= 0) continue;
+        fixedEntries.push({
+          ...entry,
+          quantity: Math.min(entry.quantity, maxAllowed) as 1 | 2 | 3,
+        });
+      }
+      return { ...prev, entries: fixedEntries };
+    });
+  };
+
   const handleAdjustQuantity = (cardId: number, delta: number) => {
     setDeck((prev) => {
       const nextEntries: DeckEntry[] = [];
@@ -149,7 +215,8 @@ export default function App() {
           }
           continue;
         }
-        const clamped = Math.min(3, maxAllowed, nextQty) as 1 | 2 | 3;
+        const cap = maxAllowed > 0 ? Math.min(3, maxAllowed) : 1;
+        const clamped = Math.min(cap, nextQty) as 1 | 2 | 3;
         const updated = { ...entry, quantity: clamped };
         nextEntries.push(updated);
         if (selectedEntry?.card.id === cardId) {
@@ -162,13 +229,13 @@ export default function App() {
 
   const handleAddCardToDeck = (card: YgoCard) => {
     const maxAllowed = getMaxAllowedCopies(card.banlistStatus);
-    if (maxAllowed <= 0) return;
+    const cap = maxAllowed > 0 ? Math.min(3, maxAllowed) : 1;
 
     const section = isExtraDeckCard(card) ? 'extra' : 'main';
     setDeck((prev) => {
       const existing = prev.entries.find((e) => e.card.id === card.id);
       if (existing) {
-        const nextQty = Math.min(3, maxAllowed, existing.quantity + 1) as 1 | 2 | 3;
+        const nextQty = Math.min(cap, existing.quantity + 1) as 1 | 2 | 3;
         return {
           ...prev,
           entries: prev.entries.map((e) =>
@@ -181,9 +248,14 @@ export default function App() {
         quantity: 1,
         section,
         role: section === 'extra' ? 'Boss' : 'Engine',
-        reason: isVi
-          ? 'Được thêm thủ công từ cơ sở dữ liệu YGOPRODeck.'
-          : 'Added manually from the YGOPRODeck database.',
+        reason:
+          card.banlistStatus === 'Forbidden'
+            ? isVi
+              ? 'Lá bài BỊ CẤM (Forbidden) trong Master Duel Ranked — chỉ dùng cho phòng đấu tự do (Unlimited Room).'
+              : 'FORBIDDEN in Master Duel Standard Ranked — only usable in Unlimited Rooms.'
+            : isVi
+            ? 'Được thêm thủ công từ cơ sở dữ liệu YGOPRODeck.'
+            : 'Added manually from the YGOPRODeck database.',
       };
       setSelectedEntry(newEntry);
       return {
@@ -223,8 +295,8 @@ export default function App() {
     setBuilderBannerNote(null);
     setConstructionStage(
       isVi
-        ? '01. Đang phân tích chiến thuật & xây dựng khung bài với Gemini...'
-        : '01. Architecting archetype ratios & engine lines with Gemini...'
+        ? '01. Đang phân tích chiến thuật & xây dựng khung bài bằng Free AI Engine...'
+        : '01. Architecting archetype ratios & engine lines with Free AI Engine...'
     );
 
     const stageTimer = setTimeout(() => {
@@ -257,11 +329,14 @@ export default function App() {
         setDeck(nextDeck);
         setSelectedEntry(nextDeck.entries[0] || null);
         setTestHand(null);
+        setRecentDecks((prev) =>
+          upsertRecentDeckRecord(prev, nextDeck, 'ai-generated', targetPrompt)
+        );
         const totalCards = nextDeck.entries.reduce((s, e) => s + e.quantity, 0);
         setBuilderBannerNote(
           isVi
-            ? `Đã hoàn tất bộ bài "${nextDeck.name}" (${totalCards} lá xác thực qua YGOPRODeck · Engine: ${data.modelUsed}).`
-            : `Constructed "${nextDeck.name}" (${totalCards} cards verified via YGOPRODeck · Engine: ${data.modelUsed}).`
+            ? `Đã hoàn tất và lưu bộ bài "${nextDeck.name}" vào lịch sử 5 Deck gần đây (${totalCards} lá · Engine: ${data.modelUsed}).`
+            : `Constructed and saved "${nextDeck.name}" to Recent Decks (${totalCards} cards · Engine: ${data.modelUsed}).`
         );
       }
     } catch (err: any) {
@@ -271,6 +346,43 @@ export default function App() {
       setIsConstructingDeck(false);
       setConstructionStage('');
     }
+  };
+
+  const handleSelectRecentDeck = (selectedDeck: DeckState) => {
+    setDeck(selectedDeck);
+    setSelectedEntry(selectedDeck.entries[0] || null);
+    setTestHand(null);
+    setActiveTab('builder');
+    setMobileRecentOpen(false);
+    setBuilderBannerNote(
+      isVi
+        ? `Đã mở lại cấu hình bộ bài "${selectedDeck.name}" từ Lịch sử 5 Deck gần đây.`
+        : `Restored deck configuration "${selectedDeck.name}" from Recent Decks.`
+    );
+  };
+
+  const handleSaveCurrentDeckToRecent = () => {
+    setRecentDecks((prev) =>
+      upsertRecentDeckRecord(prev, deck, 'manual-saved', promptInput || deck.archetype)
+    );
+    setBuilderBannerNote(
+      isVi
+        ? `Đã lưu bản thiết kế "${deck.name}" vào Lịch sử 5 Deck gần đây.`
+        : `Saved "${deck.name}" snapshot into Recent Decks.`
+    );
+  };
+
+  const handleDeleteRecentDeck = (recordId: string) => {
+    setRecentDecks((prev) => {
+      const next = prev.filter((r) => r.id !== recordId);
+      saveRecentDecksToStorage(next);
+      return next;
+    });
+  };
+
+  const handleClearRecentDecks = () => {
+    setRecentDecks([]);
+    saveRecentDecksToStorage([]);
   };
 
   const handleApplyCoachChanges = async (changes: SuggestedDeckChange[]) => {
@@ -394,6 +506,9 @@ export default function App() {
         };
         setDeck(importedDeck);
         setSelectedEntry(hydratedEntries[0]);
+        setRecentDecks((prev) =>
+          upsertRecentDeckRecord(prev, importedDeck, 'ydk-imported', fileName)
+        );
         setActiveTab('builder');
       }
     } finally {
@@ -489,6 +604,23 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('builder');
+                  setRightDockMode('recent');
+                  setMobileRecentOpen(true);
+                }}
+                className="min-h-[32px] px-2.5 py-1 rounded-lg bg-amber-400/15 border border-amber-400/40 hover:border-amber-400 text-amber-300 text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0"
+              >
+                <History className="w-3.5 h-3.5 text-amber-400" />
+                <span>
+                  {isVi
+                    ? `Deck Gần Đây (${recentDecks.length}/5)`
+                    : `Recent Decks (${recentDecks.length}/5)`}
+                </span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => exportDeckToExcel(deck, lang, translatedEffects)}
@@ -718,16 +850,16 @@ export default function App() {
                     </div>
 
                     <div className="flex items-center gap-2 text-xs text-slate-400 font-mono shrink-0">
-                      <span>Model:</span>
+                      <span>Free AI:</span>
                       <select
                         value={builderModel}
                         onChange={(e) => setBuilderModel(e.target.value as GeminiModelTier)}
-                        aria-label="Architect Gemini Model"
+                        aria-label="Architect Free AI Model"
                         className="min-h-[34px] px-2 py-1 rounded-lg bg-slate-900 border border-slate-800 text-amber-300 text-xs focus:outline-none"
                       >
-                        <option value="gemini-4-argon">gemini-4-argon</option>
-                        <option value="gemini-3.8-flash">gemini-3.8-flash</option>
-                        <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
+                        <option value="gpt-oss-20b-free">GPT-OSS 20B (Free 0đ)</option>
+                        <option value="llama-3.3-70b-free">Llama 3.3 70B (Free 0đ)</option>
+                        <option value="qwen-2.5-72b-free">Qwen 2.5 72B (Free 0đ)</option>
                       </select>
                     </div>
                   </div>
@@ -855,6 +987,102 @@ export default function App() {
                         </span>
                       </div>
                     </div>
+
+                    {/* Master Duel Banlist Visual Status & Legend Strip */}
+                    <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-slate-400 font-mono text-[11px]">
+                          {isVi ? 'Banlist Master Duel:' : 'Master Duel Banlist:'}
+                        </span>
+
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono font-bold text-[11px] border ${
+                            banlistStats.forbiddenCards > 0
+                              ? 'bg-red-600/25 border-red-500 text-red-200 animate-pulse'
+                              : 'bg-slate-900/90 border-slate-800 text-slate-400'
+                          }`}
+                        >
+                          <Ban className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                          <span>
+                            {isVi
+                              ? `CẤM (0): ${banlistStats.forbiddenCards} lá`
+                              : `FORBIDDEN (0): ${banlistStats.forbiddenCards}`}
+                          </span>
+                        </span>
+
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-red-950/60 border border-red-500/50 text-red-200 font-mono font-bold text-[11px]">
+                          <span className="w-4 h-4 rounded-full bg-red-600 border border-amber-300 text-white flex items-center justify-center text-[10px] leading-none">
+                            1
+                          </span>
+                          <span>
+                            {isVi
+                              ? `GIỚI HẠN 1 (LIM): ${banlistStats.limitedCards} lá`
+                              : `LIMITED (1): ${banlistStats.limitedCards}`}
+                          </span>
+                        </span>
+
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-950/60 border border-amber-500/50 text-amber-200 font-mono font-bold text-[11px]">
+                          <span className="w-4 h-4 rounded-full bg-amber-500 border border-yellow-200 text-slate-950 flex items-center justify-center text-[10px] font-black leading-none">
+                            2
+                          </span>
+                          <span>
+                            {isVi
+                              ? `BÁN GIỚI HẠN 2 (SEMI): ${banlistStats.semiLimitedCards} lá`
+                              : `SEMI-LIMITED (2): ${banlistStats.semiLimitedCards}`}
+                          </span>
+                        </span>
+                      </div>
+
+                      {banlistStats.violations.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleAutoFixBanlist}
+                          className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-sm transition-colors"
+                        >
+                          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                          <span>
+                            {isVi
+                              ? `Tự Động Gỡ ${banlistStats.violations.length} Lá Vi Phạm Banlist`
+                              : `Auto-Fix ${banlistStats.violations.length} Banlist Violations`}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+
+                    {banlistStats.violations.length > 0 && (
+                      <div className="p-3 rounded-xl bg-red-950/70 border border-red-500/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-red-200">
+                        <div className="flex items-start sm:items-center gap-2">
+                          <Ban className="w-4 h-4 text-red-400 shrink-0 mt-0.5 sm:mt-0" />
+                          <span>
+                            {isVi ? (
+                              <>
+                                <strong>Cảnh báo Banlist Master Duel:</strong> Bộ bài đang chứa lá
+                                bài bị cấm hoặc vượt quá số lượng cho phép:{' '}
+                                {banlistStats.violations
+                                  .map(
+                                    (v) =>
+                                      `${v.card.name} (${v.quantity}/${v.maxAllowed} · ${v.card.banlistStatus})`
+                                  )
+                                  .join(', ')}
+                                .
+                              </>
+                            ) : (
+                              <>
+                                <strong>Master Duel Banlist Alert:</strong> Deck contains restricted
+                                cards exceeding legal limits:{' '}
+                                {banlistStats.violations
+                                  .map(
+                                    (v) =>
+                                      `${v.card.name} (${v.quantity}/${v.maxAllowed} · ${v.card.banlistStatus})`
+                                  )
+                                  .join(', ')}
+                                .
+                              </>
+                            )}
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Interactive 5-Card Opening Hand Simulator */}
@@ -1041,36 +1269,62 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Desktop Right 4 Columns: Card Passcode Inspector & Multi-Turn Gemini Duelist Coach */}
+                {/* Desktop Right 4 Columns: Recent Decks Sidebar, Card Passcode Inspector & Free AI Duelist Coach */}
                 <div className="hidden lg:block lg:col-span-4 space-y-4 sticky top-20">
-                  <div className="grid grid-cols-2 gap-1 p-1 bg-slate-900 border border-slate-800 rounded-lg">
+                  <div className="grid grid-cols-3 gap-1 p-1 bg-slate-900 border border-slate-800 rounded-lg">
+                    <button
+                      type="button"
+                      onClick={() => setRightDockMode('recent')}
+                      className={`py-2 px-2.5 rounded-md text-xs font-medium transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
+                        rightDockMode === 'recent'
+                          ? 'bg-amber-400 text-slate-950 font-semibold'
+                          : 'text-slate-300 hover:text-white'
+                      }`}
+                    >
+                      <History className="w-3.5 h-3.5" />
+                      <span>
+                        {isVi
+                          ? `Gần Đây (${recentDecks.length}/5)`
+                          : `Recent (${recentDecks.length}/5)`}
+                      </span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => setRightDockMode('coach')}
-                      className={`py-2 px-3 rounded-md text-xs font-medium transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
+                      className={`py-2 px-2.5 rounded-md text-xs font-medium transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
                         rightDockMode === 'coach'
                           ? 'bg-amber-400 text-slate-950 font-semibold'
                           : 'text-slate-300 hover:text-white'
                       }`}
                     >
                       <MessageSquare className="w-3.5 h-3.5" />
-                      <span>{isVi ? 'Cố Vấn Gemini' : 'Gemini Duelist Coach'}</span>
+                      <span>{isVi ? 'Cố Vấn AI' : 'AI Coach'}</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => setRightDockMode('inspector')}
-                      className={`py-2 px-3 rounded-md text-xs font-medium transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
+                      className={`py-2 px-2.5 rounded-md text-xs font-medium transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
                         rightDockMode === 'inspector'
                           ? 'bg-amber-400 text-slate-950 font-semibold'
                           : 'text-slate-300 hover:text-white'
                       }`}
                     >
                       <Layers className="w-3.5 h-3.5" />
-                      <span>{isVi ? 'Chi Tiết Lá Bài' : 'Card Inspector'}</span>
+                      <span>{isVi ? 'Chi Tiết Bài' : 'Inspector'}</span>
                     </button>
                   </div>
 
-                  {rightDockMode === 'coach' ? (
+                  {rightDockMode === 'recent' ? (
+                    <RecentDecksSidebar
+                      activeDeck={deck}
+                      recentDecks={recentDecks}
+                      onSelectDeck={handleSelectRecentDeck}
+                      onSaveCurrentDeck={handleSaveCurrentDeckToRecent}
+                      onDeleteRecentDeck={handleDeleteRecentDeck}
+                      onClearRecentDecks={handleClearRecentDecks}
+                      translatedEffects={translatedEffects}
+                    />
+                  ) : rightDockMode === 'coach' ? (
                     <DuelistCoachDrawer
                       deck={deck}
                       onApplySuggestedChanges={handleApplyCoachChanges}
@@ -1093,9 +1347,52 @@ export default function App() {
                             {selectedEntry.card.name}
                           </h3>
                           <div className="text-xs font-mono tabular-nums text-slate-400">
-                            {selectedEntry.card.mdRarity} · {selectedEntry.card.banlistStatus} · ID{' '}
-                            {selectedEntry.card.id}
+                            {selectedEntry.card.mdRarity} · ID {selectedEntry.card.id}
                           </div>
+                          {selectedEntry.card.banlistStatus !== 'Unlimited' && (
+                            <div
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono font-bold border ${
+                                selectedEntry.card.banlistStatus === 'Forbidden'
+                                  ? 'bg-red-600/25 border-red-500 text-red-200'
+                                  : selectedEntry.card.banlistStatus === 'Limited'
+                                  ? 'bg-red-950/80 border-red-500/70 text-red-200'
+                                  : 'bg-amber-950/80 border-amber-500/70 text-amber-200'
+                              }`}
+                            >
+                              {selectedEntry.card.banlistStatus === 'Forbidden' ? (
+                                <>
+                                  <Ban className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                                  <span>
+                                    {isVi
+                                      ? 'BỊ CẤM (FORBIDDEN · TỐI ĐA 0 LÁ)'
+                                      : 'FORBIDDEN (MAX 0 COPIES)'}
+                                  </span>
+                                </>
+                              ) : selectedEntry.card.banlistStatus === 'Limited' ? (
+                                <>
+                                  <span className="w-4 h-4 rounded-full bg-red-600 border border-amber-300 text-white flex items-center justify-center text-[10px]">
+                                    1
+                                  </span>
+                                  <span>
+                                    {isVi
+                                      ? 'GIỚI HẠN 1 LÁ (LIMITED · MAX 1)'
+                                      : 'LIMITED TO 1 COPY (MAX 1)'}
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="w-4 h-4 rounded-full bg-amber-500 border border-yellow-200 text-slate-950 flex items-center justify-center text-[10px] font-black">
+                                    2
+                                  </span>
+                                  <span>
+                                    {isVi
+                                      ? 'BÁN GIỚI HẠN 2 LÁ (SEMI-LIMITED · MAX 2)'
+                                      : 'SEMI-LIMITED TO 2 COPIES (MAX 2)'}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          )}
                           <div className="text-xs text-slate-300">
                             {selectedEntry.card.attribute
                               ? `${selectedEntry.card.attribute} · `
@@ -1229,9 +1526,31 @@ export default function App() {
                       {selectedEntry.card.name}
                     </h3>
                     <div className="text-xs font-mono tabular-nums text-slate-400">
-                      {selectedEntry.card.mdRarity} · {selectedEntry.card.banlistStatus} · ID{' '}
-                      {selectedEntry.card.id}
+                      {selectedEntry.card.mdRarity} · ID {selectedEntry.card.id}
                     </div>
+                    {selectedEntry.card.banlistStatus !== 'Unlimited' && (
+                      <div
+                        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                          selectedEntry.card.banlistStatus === 'Forbidden'
+                            ? 'bg-red-600/25 border-red-500 text-red-200'
+                            : selectedEntry.card.banlistStatus === 'Limited'
+                            ? 'bg-red-950/80 border-red-500/70 text-red-200'
+                            : 'bg-amber-950/80 border-amber-500/70 text-amber-200'
+                        }`}
+                      >
+                        {selectedEntry.card.banlistStatus === 'Forbidden'
+                          ? isVi
+                            ? '⛔ CẤM (FORBIDDEN · MAX 0)'
+                            : '⛔ FORBIDDEN (MAX 0)'
+                          : selectedEntry.card.banlistStatus === 'Limited'
+                          ? isVi
+                            ? '🔴 GIỚI HẠN 1 LÁ (LIMITED)'
+                            : '🔴 LIMITED (MAX 1)'
+                          : isVi
+                          ? '🟠 BÁN GIỚI HẠN 2 LÁ (SEMI)'
+                          : '🟠 SEMI-LIMITED (MAX 2)'}
+                      </div>
+                    )}
                     {typeof selectedEntry.card.atk === 'number' && (
                       <div className="text-xs font-mono tabular-nums text-amber-300">
                         ATK {selectedEntry.card.atk}
@@ -1359,6 +1678,41 @@ export default function App() {
               <DuelistCoachDrawer
                 deck={deck}
                 onApplySuggestedChanges={handleApplyCoachChanges}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Mobile Bottom Sheet 3: Recent Decks Sidebar Drawer (< 1024px) */}
+        {mobileRecentOpen && (
+          <div
+            className="fixed inset-0 z-50 lg:hidden bg-black/65 backdrop-blur-sm flex items-end"
+            onClick={() => setMobileRecentOpen(false)}
+          >
+            <div
+              className="w-full max-h-[86vh] rounded-t-3xl bg-[#111827] border-t border-slate-700 p-3 pb-8 space-y-2 overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between px-2 pt-1">
+                <div className="w-10 h-1.5 bg-slate-700 rounded-full mx-auto" />
+                <button
+                  type="button"
+                  onClick={() => setMobileRecentOpen(false)}
+                  aria-label="Close Recent Decks"
+                  className="min-h-[36px] min-w-[36px] rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <RecentDecksSidebar
+                activeDeck={deck}
+                recentDecks={recentDecks}
+                onSelectDeck={handleSelectRecentDeck}
+                onSaveCurrentDeck={handleSaveCurrentDeckToRecent}
+                onDeleteRecentDeck={handleDeleteRecentDeck}
+                onClearRecentDecks={handleClearRecentDecks}
+                translatedEffects={translatedEffects}
               />
             </div>
           </div>

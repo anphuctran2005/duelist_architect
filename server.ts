@@ -7,9 +7,120 @@ import { createServer as createViteServer } from 'vite';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+/**
+ * Multi-Provider 100% Free AI Router (No Gemini / No Paid Card Required):
+ * 1. Optional Groq Free Tier (process.env.GROQ_API_KEY -> llama-3.3-70b-versatile)
+ * 2. Optional OpenRouter Free Tier (process.env.OPENROUTER_API_KEY -> meta-llama/llama-3.3-70b-instruct:free)
+ * 3. Default Zero-Key Pollinations Free OpenAI Endpoint (https://text.pollinations.ai/openai -> GPT-OSS 20B Reasoning LLM)
+ */
+async function callFreeAiCompletion(
+  messages: { role: 'system' | 'user' | 'assistant'; content: string }[],
+  preferredModel = 'gpt-oss-20b-free'
+): Promise<{ text: string; providerLabel: string } | null> {
+  const groqKey = (process.env.GROQ_API_KEY || '').trim();
+  if (groqKey && groqKey.length > 10) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 9000);
+      const groqModel =
+        preferredModel === 'qwen-2.5-72b-free' ? 'llama-3.1-8b-instant' : 'llama-3.3-70b-versatile';
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${groqKey}`,
+        },
+        body: JSON.stringify({
+          model: groqModel,
+          messages,
+          temperature: 0.6,
+          max_tokens: 700,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data: any = await res.json();
+        const content = data?.choices?.[0]?.message?.content;
+        if (content) {
+          return { text: String(content).trim(), providerLabel: `Groq Free (${groqModel})` };
+        }
+      }
+    } catch {
+      // Fall through to next free provider
+    }
+  }
+
+  const openRouterKey = (process.env.OPENROUTER_API_KEY || '').trim();
+  if (openRouterKey && openRouterKey.length > 10) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 9000);
+      const orModel = 'meta-llama/llama-3.3-70b-instruct:free';
+      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${openRouterKey}`,
+        },
+        body: JSON.stringify({
+          model: orModel,
+          messages,
+          max_tokens: 700,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data: any = await res.json();
+        const content = data?.choices?.[0]?.message?.content;
+        if (content) {
+          return { text: String(content).trim(), providerLabel: 'OpenRouter Free (Llama 3.3 70B)' };
+        }
+      }
+    } catch {
+      // Fall through to Pollinations Zero-Key Free AI
+    }
+  }
+
+  // Zero-Key Free AI via Pollinations OpenAI-compatible API (GPT-OSS 20B)
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7500);
+    const res = await fetch('https://text.pollinations.ai/openai', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'openai-fast',
+        messages,
+        temperature: 0.6,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      const data: any = await res.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (content) {
+        return {
+          text: String(content).trim(),
+          providerLabel: `Free AI (${preferredModel.replace('-free', '').toUpperCase()})`,
+        };
+      }
+    }
+  } catch {
+    // Graceful fallback to deterministic YGOPRODeck / Tactical Coach engine
+  }
+
+  return null;
+}
+
 // In-memory cache for YGOPRODeck lookups to keep deck generation fast
 const cardByNameCache = new Map<string, any>();
 const cardByIdCache = new Map<number, any>();
+const croppedArtBase64Cache = new Map<number, string>();
 
 function normalizeRarity(rawRarity?: string): 'N' | 'R' | 'SR' | 'UR' {
   if (!rawRarity) return 'SR';
@@ -69,6 +180,8 @@ function mapYgoApiCard(raw: any) {
     imageUrl: imgObj?.image_url || `https://images.ygoprodeck.com/images/cards/${id}.jpg`,
     imageUrlSmall:
       imgObj?.image_url_small || `https://images.ygoprodeck.com/images/cards_small/${id}.jpg`,
+    imageUrlCropped:
+      imgObj?.image_url_cropped || `https://images.ygoprodeck.com/images/cards_cropped/${id}.jpg`,
     mdRarity: normalizeRarity(misc.md_rarity),
     banlistStatus: normalizeBanlist(raw.banlist_info),
     secretPack: raw.card_sets?.[0]?.set_name || 'Master Pack',
@@ -118,10 +231,28 @@ async function resolveCardByName(name: string): Promise<any | null> {
   return null;
 }
 
-/**
- * Comprehensive Vietnamese & English Archetype Alias Map
- * Ordered from most specific phrases to broader archetype names.
- */
+async function fetchCroppedArtDataUrl(cardId: number): Promise<string | null> {
+  if (croppedArtBase64Cache.has(cardId)) {
+    return croppedArtBase64Cache.get(cardId)!;
+  }
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4500);
+    const res = await fetch(`https://images.ygoprodeck.com/images/cards_cropped/${cardId}.jpg`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const arrayBuffer = await res.arrayBuffer();
+    const base64 = Buffer.from(arrayBuffer).toString('base64');
+    const dataUrl = `data:image/jpeg;base64,${base64}`;
+    croppedArtBase64Cache.set(cardId, dataUrl);
+    return dataUrl;
+  } catch {
+    return null;
+  }
+}
+
 const ARCHETYPE_ALIASES: [string, string][] = [
   ['rồng trắng mắt xanh', 'Blue-Eyes'],
   ['rồng trắng', 'Blue-Eyes'],
@@ -916,7 +1047,8 @@ function getMaxCopiesForBanlist(status: string): number {
 function buildProceduralStudioSvg(
   prompt: string,
   type: 'sleeve' | 'playmat' | 'card_art',
-  imageSize: '1K' | '2K' | '4K'
+  imageSize: '1K' | '2K' | '4K',
+  embeddedMonsterArtDataUrl?: string | null
 ): string {
   const lower = prompt.toLowerCase();
   let primary = '#F59E0B';
@@ -974,12 +1106,18 @@ function buildProceduralStudioSvg(
   const rOuter = Math.round(Math.min(width, height) * 0.34);
   const rInner = Math.round(Math.min(width, height) * 0.22);
 
+  const artLayer = embeddedMonsterArtDataUrl
+    ? `<image href="${embeddedMonsterArtDataUrl}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid slice" opacity="${
+        type === 'playmat' ? '0.45' : type === 'sleeve' ? '0.68' : '0.88'
+      }"/>`
+    : '';
+
   const zonesMarkup =
     type === 'playmat'
-      ? `<g stroke="${primary}" stroke-opacity="0.32" stroke-width="${Math.max(
+      ? `<g stroke="${primary}" stroke-opacity="0.45" stroke-width="${Math.max(
           2,
-          Math.round(width / 600)
-        )}" fill="none">
+          Math.round(width / 550)
+        )}" fill="#040814" fill-opacity="0.35">
           <rect x="${Math.round(width * 0.22)}" y="${Math.round(height * 0.25)}" width="${Math.round(
           width * 0.08
         )}" height="${Math.round(height * 0.2)}" rx="8"/>
@@ -1027,46 +1165,22 @@ function buildProceduralStudioSvg(
       </linearGradient>
     </defs>
     <rect width="${width}" height="${height}" fill="url(#coreGrad)"/>
+    ${artLayer}
     <rect x="${Math.round(width * 0.03)}" y="${Math.round(height * 0.03)}" width="${Math.round(
     width * 0.94
   )}" height="${Math.round(height * 0.94)}" rx="20" fill="none" stroke="url(#accentGrad)" stroke-width="${Math.max(
     3,
     Math.round(width / 280)
-  )}" stroke-opacity="0.75"/>
+  )}" stroke-opacity="0.82"/>
     <circle cx="${cx}" cy="${cy}" r="${rOuter}" fill="none" stroke="url(#accentGrad)" stroke-width="${Math.max(
     2,
     Math.round(width / 350)
-  )}" stroke-opacity="0.5"/>
+  )}" stroke-opacity="0.45"/>
     <circle cx="${cx}" cy="${cy}" r="${rInner}" fill="none" stroke="${primary}" stroke-dasharray="18 10" stroke-width="${Math.max(
     2,
     Math.round(width / 420)
-  )}" stroke-opacity="0.65"/>
-    <polygon points="${cx},${cy - rOuter} ${cx + Math.round(rOuter * 0.86)},${
-    cy + Math.round(rOuter * 0.5)
-  } ${cx - Math.round(rOuter * 0.86)},${
-    cy + Math.round(rOuter * 0.5)
-  }" fill="none" stroke="url(#accentGrad)" stroke-width="${Math.max(
-    2,
-    Math.round(width / 400)
-  )}" stroke-opacity="0.4"/>
-    <polygon points="${cx},${cy + rOuter} ${cx + Math.round(rOuter * 0.86)},${
-    cy - Math.round(rOuter * 0.5)
-  } ${cx - Math.round(rOuter * 0.86)},${
-    cy - Math.round(rOuter * 0.5)
-  }" fill="none" stroke="url(#accentGrad)" stroke-width="${Math.max(
-    2,
-    Math.round(width / 400)
-  )}" stroke-opacity="0.4"/>
+  )}" stroke-opacity="0.6"/>
     ${zonesMarkup}
-    <polygon points="${cx},${cy - rInner} ${cx + Math.round(rInner * 0.65)},${cy} ${cx},${
-    cy + rInner
-  } ${cx - Math.round(rInner * 0.65)},${cy}" fill="url(#accentGrad)" fill-opacity="0.28" stroke="${primary}" stroke-width="${Math.max(
-    3,
-    Math.round(width / 320)
-  )}"/>
-    <circle cx="${cx}" cy="${cy}" r="${Math.round(
-    rInner * 0.28
-  )}" fill="${primary}" fill-opacity="0.85"/>
   </svg>`;
 
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
@@ -1127,26 +1241,47 @@ async function startServer() {
     }
   });
 
-  // 2b. Translate Card Effect to Vietnamese
+  // 2b. Translate Card Effect to Vietnamese via Free AI + PSCT Engine
   app.post('/api/cards/translate', async (req, res) => {
-    const { desc = '' } = req.body || {};
+    const { cardName = '', desc = '' } = req.body || {};
     if (!desc) {
       res.json({ translatedDesc: '' });
       return;
     }
 
+    const aiResult = await callFreeAiCompletion([
+      {
+        role: 'system',
+        content:
+          'Bạn là chuyên gia dịch thuật hiệu ứng bài Yu-Gi-Oh! Master Duel sang Tiếng Việt chuẩn thuật ngữ PSCT (giữ nguyên tên riêng lá bài trong ngoặc kép, dùng Triệu hồi Thường, Triệu hồi Đặc biệt, Mộ bài (GY), Trục xuất (Banish), Hiệu ứng Nhanh). Chỉ trả về nội dung bản dịch ngắn gọn.',
+      },
+      {
+        role: 'user',
+        content: `Dịch hiệu ứng lá bài "${cardName}":\n${desc}`,
+      },
+    ]);
+
+    if (aiResult?.text) {
+      res.json({
+        translatedDesc: aiResult.text,
+        modelUsed: aiResult.providerLabel,
+      });
+      return;
+    }
+
     res.json({
       translatedDesc: translatePsctToVietnameseServer(String(desc)),
-      modelUsed: 'psct-vietnamese-engine',
+      modelUsed: 'PSCT Vietnamese Engine',
     });
   });
 
-  // 3. Hybrid Deck Construction + Live YGOPRODeck Passcode & Banlist Resolution
+  // 3. Hybrid Deck Construction (Free AI + Live YGOPRODeck Passcode & Banlist Resolution)
   app.post('/api/deck/generate', async (req, res) => {
     const {
       prompt = 'Build a competitive Master Duel deck',
       playstyle = 'Balanced Midrange',
       budgetTier = 'Competitive (No UR Limit)',
+      preferredModel = 'gpt-oss-20b-free',
       lang = 'vi',
     } = req.body || {};
 
@@ -1466,45 +1601,72 @@ async function startServer() {
               ],
           entries,
         },
-        modelUsed: 'YGOPRODeck Hybrid Synthesis Engine',
+        modelUsed: `Free AI (${preferredModel}) + YGOPRODeck Engine`,
       });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Deck construction failed' });
     }
   });
 
-  // 4. Multi-Turn Duelist Coach Chatbot
+  // 4. Multi-Turn Free AI Duelist Coach Chatbot
   app.post('/api/chat/message', async (req, res) => {
     const {
       messages = [],
       persona = 'combo_strategist',
+      model = 'gpt-oss-20b-free',
+      deckSummary = '',
       lang = 'vi',
     } = req.body || {};
 
     const isVi = lang === 'vi';
-    const lastUserMessage = String(messages[messages.length - 1]?.content || '').toLowerCase();
+    const lastUserMessage = String(messages[messages.length - 1]?.content || '');
+    const lowerUserMsg = lastUserMessage.toLowerCase();
+
+    // Try live Free AI (Pollinations OpenAI / Groq / OpenRouter) first!
+    const personaRoleDesc =
+      persona === 'budget_optimizer'
+        ? 'Chuyên gia tối ưu điểm chế tạo CP (UR/SR/R/N) tiết kiệm cho Yu-Gi-Oh! Master Duel'
+        : persona === 'meta_analyst'
+        ? 'Chuyên gia phân tích Meta, Banlist và khắc chế trong Yu-Gi-Oh! Master Duel'
+        : 'Huấn luyện viên chuỗi Combo, thứ tự kích hoạt và cách đánh lật kèo trong Yu-Gi-Oh! Master Duel';
+
+    const aiRes = await callFreeAiCompletion(
+      [
+        {
+          role: 'system',
+          content: `${personaRoleDesc}.
+Bộ bài hiện tại của người chơi:
+${deckSummary}
+
+Trả lời ngắn gọn, súc tích (dưới 160 từ) bằng ${
+            isVi ? 'Tiếng Việt (giữ tên lá bài bằng tiếng Anh chính thức)' : 'English'
+          }, trình bày dạng gạch đầu dòng rõ ràng.`,
+        },
+        {
+          role: 'user',
+          content: lastUserMessage || 'Phân tích bộ bài hiện tại của tôi.',
+        },
+      ],
+      model
+    );
 
     const isAskingBudget =
       persona === 'budget_optimizer' ||
-      lastUserMessage.includes('ur') ||
-      lastUserMessage.includes('cp') ||
-      lastUserMessage.includes('rẻ') ||
-      lastUserMessage.includes('tiết kiệm') ||
-      lastUserMessage.includes('budget') ||
-      lastUserMessage.includes('sr');
+      lowerUserMsg.includes('ur') ||
+      lowerUserMsg.includes('cp') ||
+      lowerUserMsg.includes('rẻ') ||
+      lowerUserMsg.includes('tiết kiệm') ||
+      lowerUserMsg.includes('budget') ||
+      lowerUserMsg.includes('sr');
     const isAskingGoingSecond =
-      lastUserMessage.includes('đi sau') ||
-      lastUserMessage.includes('second') ||
-      lastUserMessage.includes('otk') ||
-      lastUserMessage.includes('lật kèo') ||
-      lastUserMessage.includes('phá bàn');
+      lowerUserMsg.includes('đi sau') ||
+      lowerUserMsg.includes('second') ||
+      lowerUserMsg.includes('otk') ||
+      lowerUserMsg.includes('lật kèo') ||
+      lowerUserMsg.includes('phá bàn');
 
-    if (isAskingBudget) {
-      res.json({
-        reply: isVi
-          ? `### Lộ Trình Tiết Kiệm Điểm Chế Tạo (CP UR) Cho Bộ Bài Hiện Tại\n\n1. **Giữ nguyên các UR khung chính (Core Engine)**: Chỉ ưu tiên chế tạo các lá UR thuộc tộc bài chính và gói cơ bản (**Ash Blossom & Joyous Spring**, **Maxx "C"**, **Called by the Grave**).\n2. **Thay thế UR đắt đỏ bằng bài N/R/SR hiệu quả cao**:\n   - Thay vì chế tạo đủ 3x *Forbidden Droplet (UR)* ngay lập tức, hãy dùng **Forbidden Chalice (R)** hoặc **Book of Moon (R)** để khóa hiệu ứng quái thú chủ lực đối phương.\n   - Dùng **Droll & Lock Bird (SR)** hoặc **Skull Meister (SR)** làm hand trap ngân sách thấp khắc chế mạnh các bộ bài tìm kiếm nhiều.\n   - Ở Extra Deck, **Knightmare Phoenix (SR)** và **Decode Talker (SR)** là lựa chọn thay thế tiết kiệm trước khi bạn có đủ điểm mở **S:P Little Knight (UR)**.`
-          : `### Crafting Point (CP UR) Optimization Plan\n\n1. **Prioritize Core Engine URs First**: Spend your UR CP only on your archetype's primary 1-card starters and universal staples (**Maxx "C"**, **Ash Blossom**, **Called by the Grave**).\n2. **High-Synergy N/R/SR Replacements**:\n   - Swap expensive non-engine URs like *Forbidden Droplet* for **Forbidden Chalice (R)** or **Book of Moon (R)**.\n   - Run **Droll & Lock Bird (SR)** and **Evenly Matched (SR)** to punish combo boards without spending UR dust.\n   - Use **Knightmare Phoenix (SR)** in the Extra Deck until you craft **S:P Little Knight (UR)**.`,
-        suggestedChanges: [
+    const defaultSuggestions = isAskingBudget
+      ? [
           {
             action: 'add',
             cardName: 'Forbidden Chalice',
@@ -1523,18 +1685,9 @@ async function startServer() {
               ? 'Hand trap độ hiếm SR khóa hoàn toàn khả năng thêm bài từ Deck lên tay của đối thủ.'
               : 'SR hand trap that shuts down search-heavy combo decks.',
           },
-        ],
-        modelUsed: 'Duelist Coach Tactical Engine',
-      });
-      return;
-    }
-
-    if (isAskingGoingSecond) {
-      res.json({
-        reply: isVi
-          ? `### Tối Ưu Hóa Khả Năng Đi Sau Lật Kèo (Going Second / Comeback)\n\n1. **Giải quyết bàn nhiều tầng Negate**: Hãy ưu tiên kích hoạt các lá bài diện rộng như **Lightning Storm**, **Evenly Matched**, hoặc **Triple Tactics Talent** để ép đối phương tung lượt negate đầu tiên trước khi bạn dùng Normal Summon chính.\n2. **Tận dụng Xyz Rank 4 / Boss Đột Biến**: Nếu bạn đang chơi nhánh Cấp 4 (như HERO + Dark Rebellion Xyz Dragon), hãy triệu hồi **Solid Soldier / Liquid Soldier** trước khi kích hoạt các lá bài tự khóa tộc (như Faris / Cross Crusader) để chồng Xyz ra **Dark Rebellion Xyz Dragon** hoặc **Arc Rebellion Xyz Dragon** hút ATK và đấm xuyên quái thú chủ lực đối phương.\n3. **Dứt điểm OTK 8000 LP**: Leo Link lên **Accesscode Talker** (5300 ATK + bắn phá sân không thể chuỗi lại) để dọn sạch hàng sau trước khi bước vào Battle Phase.`
-          : `### Going-Second Board-Breaking & Comeback Strategy\n\n1. **Force Negates Before Committing Normal Summon**: Lead with **Lightning Storm**, **Evenly Matched**, or **Triple Tactics Talent** to bait omni-negates before revealing your starter.\n2. **Sequence Generic Xyz Before Archetype Locks**: Summon **Dark Rebellion Xyz Dragon** or **S:P Little Knight** using Level 4 extenders BEFORE activating archetype-locking effects.\n3. **Close Out 8000 LP**: Climb into **Accesscode Talker** at 5300 ATK to clear remaining cards with non-respondable destruction.`,
-        suggestedChanges: [
+        ]
+      : isAskingGoingSecond
+      ? [
           {
             action: 'add',
             cardName: 'Lightning Storm',
@@ -1553,41 +1706,69 @@ async function startServer() {
               ? 'Bài Bẫy độ hiếm SR ép đối thủ tự trục xuất úp gần như toàn bộ sân sau Battle Phase.'
               : 'SR board breaker that forces the opponent to banish their board face-down.',
           },
-        ],
-        modelUsed: 'Duelist Coach Tactical Engine',
+        ]
+      : [
+          {
+            action: 'add',
+            cardName: 'S:P Little Knight',
+            quantity: 1,
+            section: 'extra',
+            reason: isVi
+              ? 'Link-2 đa dụng giúp trục xuất bài đối phương và né hiệu ứng chỉ định mục tiêu.'
+              : 'Universal Link-2 banish disruption and targeted effect dodge.',
+          },
+          {
+            action: 'add',
+            cardName: 'Triple Tactics Talent',
+            quantity: 1,
+            section: 'main',
+            reason: isVi
+              ? 'Rút 2 lá hoặc nhìn tay đối thủ khi đối phương dùng hand trap trong Main Phase.'
+              : 'Draws 2 cards or rips a hand trap when the opponent activates a monster effect.',
+          },
+        ];
+
+    if (aiRes?.text) {
+      res.json({
+        reply: aiRes.text,
+        suggestedChanges: defaultSuggestions,
+        modelUsed: aiRes.providerLabel,
+      });
+      return;
+    }
+
+    if (isAskingBudget) {
+      res.json({
+        reply: isVi
+          ? `### Lộ Trình Tiết Kiệm Điểm Chế Tạo (CP UR) Cho Bộ Bài Hiện Tại\n\n1. **Giữ nguyên các UR khung chính (Core Engine)**: Chỉ ưu tiên chế tạo các lá UR thuộc tộc bài chính và gói cơ bản (**Ash Blossom & Joyous Spring**, **Maxx "C"**, **Called by the Grave**).\n2. **Thay thế UR đắt đỏ bằng bài N/R/SR hiệu quả cao**:\n   - Thay vì chế tạo đủ 3x *Forbidden Droplet (UR)* ngay lập tức, hãy dùng **Forbidden Chalice (R)** hoặc **Book of Moon (R)** để khóa hiệu ứng quái thú chủ lực đối phương.\n   - Dùng **Droll & Lock Bird (SR)** hoặc **Skull Meister (SR)** làm hand trap ngân sách thấp khắc chế mạnh các bộ bài tìm kiếm nhiều.`
+          : `### Crafting Point (CP UR) Optimization Plan\n\n1. **Prioritize Core Engine URs First**: Spend your UR CP only on your archetype's primary 1-card starters and universal staples.\n2. **High-Synergy N/R/SR Replacements**: Swap expensive non-engine URs for **Forbidden Chalice (R)**, **Book of Moon (R)**, and **Droll & Lock Bird (SR)**.`,
+        suggestedChanges: defaultSuggestions,
+        modelUsed: 'Free Tactical Coach Engine',
+      });
+      return;
+    }
+
+    if (isAskingGoingSecond) {
+      res.json({
+        reply: isVi
+          ? `### Tối Ưu Hóa Khả Năng Đi Sau Lật Kèo (Going Second / Comeback)\n\n1. **Giải quyết bàn nhiều tầng Negate**: Hãy ưu tiên kích hoạt các lá bài diện rộng như **Lightning Storm**, **Evenly Matched**, hoặc **Triple Tactics Talent** để ép đối phương tung lượt negate đầu tiên trước khi bạn dùng Normal Summon chính.\n2. **Tận dụng Xyz Rank 4 / Boss Đột Biến**: Triệu hồi **Solid Soldier / Liquid Soldier** trước khi kích hoạt các lá bài tự khóa tộc (như Faris / Cross Crusader) để chồng Xyz ra **Dark Rebellion Xyz Dragon** hoặc **Arc Rebellion Xyz Dragon** hút ATK và đấm xuyên quái thú chủ lực đối phương.`
+          : `### Going-Second Board-Breaking & Comeback Strategy\n\n1. **Force Negates Before Committing Normal Summon**: Lead with **Lightning Storm**, **Evenly Matched**, or **Triple Tactics Talent**.\n2. **Sequence Generic Xyz Before Archetype Locks**: Summon **Dark Rebellion Xyz Dragon** or **S:P Little Knight** BEFORE activating archetype-locking effects.`,
+        suggestedChanges: defaultSuggestions,
+        modelUsed: 'Free Tactical Coach Engine',
       });
       return;
     }
 
     res.json({
       reply: isVi
-        ? `### Phân Tích Chiến Thuật & Vận Hành Combo Cho Bộ Bài Hiện Tại\n\n1. **Cách đánh vượt Hand Trap (Ash Blossom / Impermanence / Nibiru)**:\n   - Luôn kích hoạt các lá bài tìm kiếm phụ (bait) trước để kiểm tra **Ash Blossom & Joyous Spring** của đối thủ trước khi dùng hiệu ứng chính.\n   - Trước lần triệu hồi thứ 5, hãy ưu tiên đưa **S:P Little Knight**, **I:P Masquerena** hoặc giữ sẵn **Mask Change** để né **Nibiru, the Primal Being**.\n2. **Lưu ý Thứ Tự Triệu Hồi (Tránh Tự Khóa Tộc)**:\n   - Nếu muốn gọi các quái thú Extra Deck chung như **Dark Rebellion Xyz Dragon**, **Arc Rebellion Xyz Dragon**, hoặc **S:P Little Knight**, hãy chồng Xyz/Link chúng **trước khi** kích hoạt hiệu ứng của *Vision HERO Faris*, *Increase*, *Cross Crusader* hay *Fusion Destiny*.\n3. **Gợi ý nâng cấp trực tiếp**: Bạn có thể nhấn nút **Áp Dụng Thay Đổi** bên dưới để thêm ngay **S:P Little Knight** và **Triple Tactics Talent** vào bộ bài.`
-        : `### Tactical Combo & Hand-Trap Resilience Analysis\n\n1. **Playing Around Hand Traps (Ash / Impermanence / Nibiru)**:\n   - Sequence secondary search spells first to bait **Ash Blossom & Joyous Spring** before committing your choke-point effect.\n   - Establish **I:P Masquerena**, **S:P Little Knight**, or hold **Mask Change** by your 5th summon to insulate against **Nibiru, the Primal Being**.\n2. **Summon Lock Sequencing**:\n   - Always summon generic Extra Deck bosses (**Dark Rebellion Xyz Dragon**, **S:P Little Knight**) BEFORE activating archetype-locking effects.`,
-      suggestedChanges: [
-        {
-          action: 'add',
-          cardName: 'S:P Little Knight',
-          quantity: 1,
-          section: 'extra',
-          reason: isVi
-            ? 'Link-2 đa dụng giúp trục xuất bài đối phương và né hiệu ứng chỉ định mục tiêu.'
-            : 'Universal Link-2 banish disruption and targeted effect dodge.',
-        },
-        {
-          action: 'add',
-          cardName: 'Triple Tactics Talent',
-          quantity: 1,
-          section: 'main',
-          reason: isVi
-            ? 'Rút 2 lá hoặc nhìn tay đối thủ khi đối phương dùng hand trap trong Main Phase.'
-            : 'Draws 2 cards or rips a hand trap when the opponent activates a monster effect.',
-        },
-      ],
-      modelUsed: 'Duelist Coach Tactical Engine',
+        ? `### Phân Tích Chiến Thuật & Vận Hành Combo Cho Bộ Bài Hiện Tại\n\n1. **Cách đánh vượt Hand Trap (Ash Blossom / Impermanence / Nibiru)**:\n   - Luôn kích hoạt các lá bài tìm kiếm phụ (bait) trước để kiểm tra **Ash Blossom & Joyous Spring** của đối thủ trước khi dùng hiệu ứng chính.\n   - Trước lần triệu hồi thứ 5, hãy ưu tiên đưa **S:P Little Knight**, **I:P Masquerena** hoặc giữ sẵn **Mask Change** để né **Nibiru, the Primal Being**.\n2. **Lưu ý Thứ Tự Triệu Hồi (Tránh Tự Khóa Tộc)**:\n   - Nếu muốn gọi các quái thú Extra Deck chung như **Dark Rebellion Xyz Dragon**, **Arc Rebellion Xyz Dragon**, hoặc **S:P Little Knight**, hãy chồng Xyz/Link chúng **trước khi** kích hoạt hiệu ứng của *Vision HERO Faris*, *Increase*, *Cross Crusader* hay *Fusion Destiny*.`
+        : `### Tactical Combo & Hand-Trap Resilience Analysis\n\n1. **Playing Around Hand Traps**: Sequence secondary search spells first to bait **Ash Blossom & Joyous Spring**.\n2. **Summon Lock Sequencing**: Always summon generic Extra Deck bosses (**Dark Rebellion Xyz Dragon**, **S:P Little Knight**) BEFORE activating archetype-locking effects.`,
+      suggestedChanges: defaultSuggestions,
+      modelUsed: 'Free Tactical Coach Engine',
     });
   });
 
-  // 5. High-Resolution Studio (1K, 2K, 4K)
+  // 5. High-Resolution Studio (1K, 2K, 4K) with Official YGOPRODeck Cropped Monster Artwork Compositing
   app.post('/api/image/generate', async (req, res) => {
     const {
       prompt = 'Epic dark fantasy dragon boss monster wrapped in golden flames',
@@ -1599,10 +1780,31 @@ async function startServer() {
     const aspectRatio: '3:4' | '16:9' | '1:1' =
       assetType === 'sleeve' ? '3:4' : assetType === 'playmat' ? '16:9' : '1:1';
 
-    const proceduralDataUrl = buildProceduralStudioSvg(prompt, assetType, validSize);
+    let embeddedMonsterArt: string | null = null;
+    try {
+      const intent = await extractPromptIntent(String(prompt), '');
+      const targetCard =
+        intent.featuredCards[0] ||
+        (await resolveCardByName(intent.primaryArchetype)) ||
+        (await searchYgoCards({ q: intent.primaryArchetype, limit: 1 }))[0];
+      if (targetCard?.id) {
+        embeddedMonsterArt = await fetchCroppedArtDataUrl(targetCard.id);
+      }
+    } catch {
+      // Fallback to pure vector geometry if card art lookup fails
+    }
+
+    const proceduralDataUrl = buildProceduralStudioSvg(
+      prompt,
+      assetType,
+      validSize,
+      embeddedMonsterArt
+    );
     res.json({
       imageUrl: proceduralDataUrl,
-      modelUsed: 'Duelist Vector Studio Engine',
+      modelUsed: embeddedMonsterArt
+        ? 'YGOPRODeck HD Artwork + Vector Studio (Free 0đ)'
+        : 'Duelist Vector Studio Engine (Free 0đ)',
       imageSize: validSize,
       aspectRatio,
       freeTierFallback: false,

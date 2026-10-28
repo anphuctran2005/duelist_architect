@@ -22,7 +22,7 @@ export const DuelistCoachDrawer: React.FC<DuelistCoachDrawerProps> = ({
   const isVi = lang === 'vi';
 
   const [persona, setPersona] = useState<ChatPersonaId>('combo_strategist');
-  const [selectedModel, setSelectedModel] = useState<GeminiModelTier>('gemini-3.8-flash');
+  const [selectedModel, setSelectedModel] = useState<GeminiModelTier>('gpt-oss-20b-free');
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [appliedMessageIds, setAppliedMessageIds] = useState<Record<string, boolean>>({});
@@ -31,10 +31,10 @@ export const DuelistCoachDrawer: React.FC<DuelistCoachDrawerProps> = ({
       id: 'welcome-coach',
       role: 'model',
       content: isVi
-        ? `Chào mừng bạn đến với **Huấn Luyện Viên Gemini (Duelist Coach)**. Tôi đã nạp danh sách bộ bài **${deck.name}** (${deck.archetype}) của bạn.\n\nBạn có thể chọn vai trò cố vấn (Hướng dẫn Combo, Phân tích Meta, hoặc Tối ưu CP giá rẻ) và chọn mô hình \`gemini-4-argon\`, \`gemini-3.8-flash\`, hoặc \`gemini-3.1-flash-lite\` để hỏi đáp bằng tiếng Việt hoặc tiếng Anh.`
-        : `Welcome to the **Duelist Coach** tactical thread. I have loaded your active **${deck.name}** (${deck.archetype}) list.\n\nChoose a coaching persona and model tier above—whether you want deep combo line breakdowns with \`gemini-4-argon\`, general ratio tuning with \`gemini-3.8-flash\`, or rapid ruling checks with \`gemini-3.1-flash-lite\`.`,
+        ? `Chào mừng bạn đến với **Huấn Luyện Viên Chiến Thuật AI Miễn Phí (Duelist Coach 0đ)**. Tôi đã nạp danh sách bộ bài **${deck.name}** (${deck.archetype}) của bạn.\n\nHệ thống sử dụng các mô hình AI mã nguồn mở miễn phí 100% (\`GPT-OSS 20B Free\`, \`Llama 3.3 70B Free\`, \`Qwen 2.5 72B Free\`) kết hợp dữ liệu YGOPRODeck mà không cần thẻ thanh toán hay API trả phí.`
+        : `Welcome to the **Free AI Duelist Coach**. I have loaded your active **${deck.name}** (${deck.archetype}) list.\n\nPowered by 100% free open-source AI models (\`GPT-OSS 20B Free\`, \`Llama 3.3 70B Free\`, \`Qwen 2.5 72B Free\`) and live YGOPRODeck data.`,
       timestamp: 'Ready',
-      modelUsed: 'gemini-3.8-flash',
+      modelUsed: 'GPT-OSS 20B (Free 0đ)',
       persona: 'combo_strategist',
     },
   ]);
@@ -56,19 +56,19 @@ export const DuelistCoachDrawer: React.FC<DuelistCoachDrawerProps> = ({
 
   const modelOptions: { id: GeminiModelTier; label: string; badge: string }[] = [
     {
-      id: 'gemini-4-argon',
-      label: 'gemini-4-argon',
-      badge: isVi ? 'Phân Tích Sâu' : 'Deep Theory',
+      id: 'gpt-oss-20b-free',
+      label: 'GPT-OSS 20B (Free)',
+      badge: isVi ? 'Suy Luận 0đ' : 'Free Reasoning',
     },
     {
-      id: 'gemini-3.8-flash',
-      label: 'gemini-3.8-flash',
-      badge: isVi ? 'Đa Dụng' : 'General Coaching',
+      id: 'llama-3.3-70b-free',
+      label: 'Llama 3.3 70B (Free)',
+      badge: isVi ? 'Đa Dụng 0đ' : 'Free Versatile',
     },
     {
-      id: 'gemini-3.1-flash-lite',
-      label: 'gemini-3.1-flash-lite',
-      badge: isVi ? 'Phản Hồi Nhanh' : 'Fast Rulings',
+      id: 'qwen-2.5-72b-free',
+      label: 'Qwen 2.5 72B (Free)',
+      badge: isVi ? 'Tốc Độ Cao 0đ' : 'Free Fast',
     },
   ];
 
