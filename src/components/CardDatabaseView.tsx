@@ -3,6 +3,7 @@ import { Ban, Languages, Plus, Search, Sparkles, X } from 'lucide-react';
 import { translateYgoEffectFallbackVi, useLanguage } from '../i18n/translations';
 import { DeckState, YgoCard } from '../types/ygo';
 import { getMaxAllowedCopies, isExtraDeckCard } from '../utils/ydk';
+import { searchCardsUnified, translateCardUnified } from '../utils/clientApiFallback';
 import { CardArtwork } from './CardArtwork';
 
 interface CardDatabaseViewProps {
@@ -26,18 +27,10 @@ export const CardDatabaseView: React.FC<CardDatabaseViewProps> = ({ deck, onAddC
   const performSearch = async (searchQuery: string, attrFilter: string) => {
     setIsLoading(true);
     try {
-      const params = new URLSearchParams();
-      if (searchQuery.trim()) params.set('q', searchQuery.trim());
-      if (attrFilter !== 'ALL') params.set('attribute', attrFilter);
-      params.set('limit', '36');
-
-      const res = await fetch(`/api/cards/search?${params.toString()}`);
-      const data = await res.json();
-      if (Array.isArray(data.cards)) {
-        setResults(data.cards);
-        if (data.cards.length > 0 && !selectedCard) {
-          setSelectedCard(data.cards[0]);
-        }
+      const cards = await searchCardsUnified(searchQuery, attrFilter, 36);
+      setResults(cards);
+      if (cards.length > 0 && !selectedCard) {
+        setSelectedCard(cards[0]);
       }
     } catch {
       // Ignore error
@@ -60,13 +53,7 @@ export const CardDatabaseView: React.FC<CardDatabaseViewProps> = ({ deck, onAddC
     if (translatedEffects[card.id] || isTranslating) return;
     setIsTranslating(true);
     try {
-      const res = await fetch('/api/cards/translate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cardName: card.name, desc: card.desc }),
-      });
-      const data = await res.json();
-      const text = data.translatedDesc || translateYgoEffectFallbackVi(card.desc);
+      const text = await translateCardUnified(card.name, card.desc);
       setTranslatedEffects((prev) => ({ ...prev, [card.id]: text }));
     } catch {
       setTranslatedEffects((prev) => ({

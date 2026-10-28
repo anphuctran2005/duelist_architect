@@ -65,6 +65,12 @@ import {
   isExtraDeckCard,
 } from './utils/ydk';
 import { exportDeckToExcel } from './utils/excelExport';
+import {
+  generateDeckUnified,
+  hydratePasscodesUnified,
+  searchCardsUnified,
+  translateCardUnified,
+} from './utils/clientApiFallback';
 
 export default function App() {
   const [lang, setLang] = useState<AppLanguage>('vi');
@@ -269,13 +275,7 @@ export default function App() {
     if (translatedEffects[card.id] || isTranslatingCard) return;
     setIsTranslatingCard(true);
     try {
-      const res = await fetch('/api/cards/translate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cardName: card.name, desc: card.desc }),
-      });
-      const data = await res.json();
-      const text = data.translatedDesc || translateYgoEffectFallbackVi(card.desc);
+      const text = await translateCardUnified(card.name, card.desc);
       setTranslatedEffects((prev) => ({ ...prev, [card.id]: text }));
     } catch {
       setTranslatedEffects((prev) => ({
@@ -308,18 +308,13 @@ export default function App() {
     }, 1800);
 
     try {
-      const response = await fetch('/api/deck/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: targetPrompt,
-          playstyle,
-          budgetTier,
-          preferredModel: builderModel,
-          lang,
-        }),
+      const data = await generateDeckUnified({
+        prompt: targetPrompt,
+        playstyle,
+        budgetTier,
+        preferredModel: builderModel,
+        lang,
       });
-      const data = await response.json();
       if (data.deck && Array.isArray(data.deck.entries) && data.deck.entries.length > 0) {
         const nextDeck: DeckState = {
           ...data.deck,
@@ -396,11 +391,8 @@ export default function App() {
         }));
       } else if (chg.action === 'add') {
         try {
-          const res = await fetch(
-            `/api/cards/search?q=${encodeURIComponent(chg.cardName)}&limit=3`
-          );
-          const data = await res.json();
-          const card: YgoCard | undefined = data.cards?.[0];
+          const cards = await searchCardsUnified(chg.cardName, 'ALL', 3);
+          const card: YgoCard | undefined = cards[0];
           if (card) {
             const maxAllowed = getMaxAllowedCopies(card.banlistStatus);
             const qty = Math.max(1, Math.min(3, maxAllowed, chg.quantity || 1)) as 1 | 2 | 3;
@@ -451,13 +443,7 @@ export default function App() {
 
     setIsImportingYdk(true);
     try {
-      const response = await fetch('/api/cards/hydrate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: allIds }),
-      });
-      const data = await response.json();
-      const cardMap: Record<number, YgoCard> = data.cards || {};
+      const cardMap: Record<number, YgoCard> = await hydratePasscodesUnified(allIds);
 
       const countMap = new Map<
         string,

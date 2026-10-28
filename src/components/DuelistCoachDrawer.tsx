@@ -8,6 +8,7 @@ import {
   GeminiModelTier,
   SuggestedDeckChange,
 } from '../types/ygo';
+import { sendCoachMessageUnified } from '../utils/clientApiFallback';
 
 interface DuelistCoachDrawerProps {
   deck: DeckState;
@@ -111,18 +112,13 @@ export const DuelistCoachDrawer: React.FC<DuelistCoachDrawerProps> = ({
     setIsSending(true);
 
     try {
-      const response = await fetch('/api/chat/message', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: nextHistory.map((m) => ({ role: m.role, content: m.content })),
-          persona,
-          model: selectedModel,
-          deckSummary: serializeDeckContext(),
-          lang,
-        }),
+      const data = await sendCoachMessageUnified({
+        messages: nextHistory.map((m) => ({ role: m.role, content: m.content })),
+        persona,
+        model: selectedModel,
+        deckSummary: serializeDeckContext(),
+        lang,
       });
-      const data = await response.json();
 
       const botMsg: ChatMessage = {
         id: `model-${Date.now()}`,

@@ -7,6 +7,7 @@ import {
   ImageSizeOption,
   VisualAssetType,
 } from '../types/ygo';
+import { generateVisualAssetUnified } from '../utils/clientApiFallback';
 import { CardArtwork } from './CardArtwork';
 
 interface VisualStudioViewProps {
@@ -100,16 +101,11 @@ export const VisualStudioView: React.FC<VisualStudioViewProps> = ({
     setStatusMessage(null);
 
     try {
-      const response = await fetch('/api/image/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: prompt.trim(),
-          assetType,
-          imageSize,
-        }),
+      const data = await generateVisualAssetUnified({
+        prompt: prompt.trim(),
+        assetType,
+        imageSize,
       });
-      const data = await response.json();
       if (data.imageUrl) {
         const aspectRatio =
           assetType === 'sleeve' ? '3:4' : assetType === 'playmat' ? '16:9' : '1:1';
