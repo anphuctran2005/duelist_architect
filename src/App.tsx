@@ -8,8 +8,10 @@ import {
   AlertTriangle,
   Ban,
   BookOpen,
+  Check,
   ChevronDown,
   ChevronUp,
+  Copy,
   Database,
   Download,
   Dices,
@@ -25,6 +27,7 @@ import {
   Moon,
   Plus,
   RotateCcw,
+  Share2,
   Sparkles,
   Sun,
   Trash2,
@@ -61,9 +64,11 @@ import {
   YgoCard,
 } from './types/ygo';
 import {
+  buildShareableDeckUrl,
   calculateAtLeastOneProbability,
   calculateCraftingPoints,
   dealTestHand,
+  decodeBase64DeckState,
   downloadYdkFile,
   getMaxAllowedCopies,
   isExtraDeckCard,
@@ -147,6 +152,123 @@ export default function App() {
   const [testHand, setTestHand] = useState<YgoCard[] | null>(null);
   const [visualAssets, setVisualAssets] = useState<GeneratedVisualAsset[]>(INITIAL_VISUAL_ASSETS);
   const [isImportingYdk, setIsImportingYdk] = useState(false);
+
+  // Shareable Base64 Deck URL State
+  const [shareUrlPreview, setShareUrlPreview] = useState<string | null>(null);
+  const [copiedShareUrl, setCopiedShareUrl] = useState(false);
+
+  // Automatically hydrate a shared deck from `?deck=<base64>` URL parameter on load
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const encodedDeck = params.get('deck');
+    if (!encodedDeck) return;
+
+    const decoded = decodeBase64DeckState(encodedDeck);
+    if (!decoded) return;
+
+    let cancelled = false;
+    (async () => {
+      setIsImportingYdk(true);
+      try {
+        // Pre-seed known cards from Starter Decks & Recent Decks for instant lookup
+        const localCardPool: Record<number, YgoCard> = {};
+        for (const preset of STARTER_DECKS) {
+          for (const e of preset.entries) {
+            localCardPool[e.card.id] = e.card;
+          }
+        }
+        for (const rec of loadRecentDecksFromStorage(STARTER_DECKS)) {
+          for (const e of rec.deck.entries) {
+            localCardPool[e.card.id] = e.card;
+          }
+        }
+
+        const allIds = decoded.e.map((tuple) => Number(tuple[0])).filter((id) => id > 0);
+        const missingIds = allIds.filter((id) => !localCardPool[id]);
+        const remoteMap =
+          missingIds.length > 0 ? await hydratePasscodesUnified(missingIds) : {};
+        const mergedMap: Record<number, YgoCard> = { ...localCardPool, ...remoteMap };
+
+        if (cancelled) return;
+
+        const hydratedEntries: DeckEntry[] = [];
+        for (const [cardId, qty, secCode, role] of decoded.e) {
+          const card = mergedMap[Number(cardId)];
+          if (!card) continue;
+          const section: DeckEntry['section'] =
+            secCode === 'e' ? 'extra' : secCode === 's' ? 'side' : 'main';
+          const clampedQty = Math.max(1, Math.min(3, Number(qty) || 1)) as 1 | 2 | 3;
+          hydratedEntries.push({
+            card,
+            quantity: clampedQty,
+            section,
+            role: role || (section === 'extra' ? 'Boss' : 'Engine'),
+            reason:
+              lang === 'vi'
+                ? 'Được tải từ liên kết chia sẻ bộ bài (Base64 Share Link).'
+                : 'Loaded from a shared Base64 deck URL.',
+          });
+        }
+
+        if (hydratedEntries.length > 0) {
+          const sharedDeck: DeckState = {
+            id: `shared-${Date.now()}`,
+            name: decoded.n || 'Shared Master Duel Deck',
+            archetype: decoded.a || hydratedEntries[0].card.archetype || 'Shared Archetype',
+            playstyle: decoded.p || 'Competitive Midrange',
+            tierRating: decoded.t || 'Shared Build',
+            strategySummary:
+              decoded.s ||
+              (lang === 'vi'
+                ? 'Bộ bài được nạp trực tiếp từ liên kết chia sẻ Base64 URL.'
+                : 'Deck configuration restored from a Base64 share URL.'),
+            comboGuide: decoded.cg,
+            entries: hydratedEntries,
+          };
+          setDeck(sharedDeck);
+          setSelectedEntry(hydratedEntries[0]);
+          setRecentDecks((prev) =>
+            upsertRecentDeckRecord(prev, sharedDeck, 'manual-saved', sharedDeck.name)
+          );
+          setBuilderBannerNote(
+            lang === 'vi'
+              ? `🔗 Đã mở thành công bộ bài được chia sẻ: "${sharedDeck.name}" (${hydratedEntries.reduce(
+                  (s, e) => s + e.quantity,
+                  0
+                )} lá).`
+              : `🔗 Loaded shared deck build: "${sharedDeck.name}" (${hydratedEntries.reduce(
+                  (s, e) => s + e.quantity,
+                  0
+                )} cards).`
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setIsImportingYdk(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleShareCurrentDeck = async () => {
+    const shareUrl = buildShareableDeckUrl(deck);
+    setShareUrlPreview(shareUrl);
+    if (typeof window !== 'undefined') {
+      window.history.replaceState(null, '', shareUrl);
+    }
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopiedShareUrl(true);
+      setTimeout(() => setCopiedShareUrl(false), 3000);
+    } catch {
+      // Ignore clipboard error
+    }
+  };
 
   // On-demand Vietnamese card effect translations in the Card Inspector
   const [translatedEffects, setTranslatedEffects] = useState<Record<number, string>>({});
@@ -678,6 +800,24 @@ export default function App() {
 
               <button
                 type="button"
+                onClick={handleShareCurrentDeck}
+                className="min-h-[34px] px-2.5 py-1 rounded-lg bg-sky-500/15 border border-sky-500/40 hover:border-sky-400 text-sky-300 text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0"
+              >
+                {copiedShareUrl ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>{isVi ? 'Đã Chép Link!' : 'Link Copied!'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Share2 className="w-3.5 h-3.5 text-sky-400" />
+                    <span>{isVi ? 'Chia Sẻ Link' : 'Share Link'}</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
                 onClick={() => exportDeckToExcel(deck, lang, translatedEffects)}
                 className="min-h-[34px] px-2.5 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/40 hover:border-emerald-400 text-emerald-300 text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0"
               >
@@ -1026,6 +1166,24 @@ export default function App() {
 
                         <button
                           type="button"
+                          onClick={handleShareCurrentDeck}
+                          className="min-h-[42px] px-3.5 py-1.5 text-xs font-semibold text-sky-300 bg-sky-500/15 border border-sky-500/40 hover:bg-sky-500/25 hover:border-sky-400 active:scale-[0.98] rounded-xl sm:rounded-lg transition-all flex items-center justify-center gap-1.5 whitespace-nowrap"
+                        >
+                          {copiedShareUrl ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>{isVi ? 'Đã Sao Chép Link!' : 'Copied Share URL!'}</span>
+                            </>
+                          ) : (
+                            <>
+                              <Share2 className="w-3.5 h-3.5 text-sky-400" />
+                              <span>{isVi ? 'Chia Sẻ Link Deck' : 'Share Deck Link'}</span>
+                            </>
+                          )}
+                        </button>
+
+                        <button
+                          type="button"
                           onClick={() => exportDeckToExcel(deck, lang, translatedEffects)}
                           className="min-h-[42px] px-3.5 py-1.5 text-xs font-semibold text-emerald-300 bg-emerald-500/15 border border-emerald-500/40 hover:bg-emerald-500/25 hover:border-emerald-400 active:scale-[0.98] rounded-xl sm:rounded-lg transition-all flex items-center justify-center gap-1.5 whitespace-nowrap"
                         >
@@ -1038,12 +1196,82 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => setActiveTab('import_guide')}
-                          className="min-h-[42px] px-3.5 py-1.5 text-xs font-semibold text-slate-950 bg-amber-400 hover:bg-amber-300 active:scale-[0.98] rounded-xl sm:rounded-lg transition-all whitespace-nowrap col-span-2 sm:col-span-1"
+                          className="min-h-[42px] px-3.5 py-1.5 text-xs font-semibold text-slate-950 bg-amber-400 hover:bg-amber-300 active:scale-[0.98] rounded-xl sm:rounded-lg transition-all whitespace-nowrap"
                         >
                           {isVi ? 'Cách Nhập Game' : 'How to Import'}
                         </button>
                       </div>
                     </div>
+
+                    {/* Interactive Base64 Share URL Panel */}
+                    {shareUrlPreview && (
+                      <div className="p-3 rounded-xl bg-slate-950 border border-sky-500/50 space-y-2">
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <span className="font-semibold text-sky-300 flex items-center gap-1.5">
+                            <Share2 className="w-3.5 h-3.5 shrink-0" />
+                            <span>
+                              {isVi
+                                ? 'Liên Kết Chia Sẻ Cấu Hình Bộ Bài (Mã Hóa Base64 URL):'
+                                : 'Shareable Deck Configuration URL (Base64-Encoded State):'}
+                            </span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setShareUrlPreview(null)}
+                            className="text-slate-400 hover:text-slate-200 text-xs"
+                          >
+                            {isVi ? 'Đóng' : 'Close'}
+                          </button>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                          <input
+                            type="text"
+                            readOnly
+                            value={shareUrlPreview}
+                            onClick={(e) => (e.target as HTMLInputElement).select()}
+                            className="flex-1 px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none"
+                          />
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={handleShareCurrentDeck}
+                              className="flex-1 sm:flex-initial min-h-[38px] px-3.5 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-semibold text-xs flex items-center justify-center gap-1.5 whitespace-nowrap"
+                            >
+                              {copiedShareUrl ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>{isVi ? 'Đã Sao Chép!' : 'Copied!'}</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3.5 h-3.5" />
+                                  <span>{isVi ? 'Sao Chép Link' : 'Copy Link'}</span>
+                                </>
+                              )}
+                            </button>
+
+                            {typeof navigator !== 'undefined' && 'share' in navigator && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator
+                                    .share({
+                                      title: deck.name,
+                                      text: `${deck.name} (${deck.archetype}) — Yu-Gi-Oh! Master Duel Deck`,
+                                      url: shareUrlPreview,
+                                    })
+                                    .catch(() => {});
+                                }}
+                                className="min-h-[38px] px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-200 text-xs font-semibold whitespace-nowrap"
+                              >
+                                {isVi ? 'Gửi Nhanh...' : 'Share...'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     <p className="text-xs text-slate-300 leading-relaxed">{deck.strategySummary}</p>
 

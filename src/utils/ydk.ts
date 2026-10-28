@@ -282,3 +282,81 @@ export function calculateAtLeastOneProbability(
   }
   return Math.round((1 - probZero) * 1000) / 10;
 }
+
+export interface CompactSharedDeckPayload {
+  v: 1;
+  n: string;
+  a: string;
+  p: string;
+  t: string;
+  s: string;
+  cg?: string[];
+  e: [number, 1 | 2 | 3, 'm' | 'e' | 's', NonNullable<DeckEntry['role']>][];
+}
+
+/**
+ * Encodes a DeckState into a compact UTF-8 URL-safe Base64 string (`?deck=...`).
+ */
+export function encodeDeckToBase64State(deck: DeckState): string {
+  const payload: CompactSharedDeckPayload = {
+    v: 1,
+    n: deck.name,
+    a: deck.archetype,
+    p: deck.playstyle,
+    t: deck.tierRating,
+    s: deck.strategySummary,
+    cg: deck.comboGuide,
+    e: deck.entries.map((entry) => [
+      entry.card.id,
+      entry.quantity,
+      entry.section === 'extra' ? 'e' : entry.section === 'side' ? 's' : 'm',
+      entry.role || (entry.section === 'extra' ? 'Boss' : 'Engine'),
+    ]),
+  };
+
+  const jsonStr = JSON.stringify(payload);
+  const bytes = new TextEncoder().encode(jsonStr);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/**
+ * Generates a complete shareable URL with the Base64-encoded deck configuration in `?deck=`.
+ */
+export function buildShareableDeckUrl(deck: DeckState): string {
+  const encoded = encodeDeckToBase64State(deck);
+  if (typeof window === 'undefined') {
+    return `?deck=${encoded}`;
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.set('deck', encoded);
+  return url.toString();
+}
+
+/**
+ * Decodes a Base64-encoded `?deck=` URL parameter back into its deck metadata and passcode tuples.
+ */
+export function decodeBase64DeckState(encoded: string): CompactSharedDeckPayload | null {
+  try {
+    const clean = encoded.trim().replace(/-/g, '+').replace(/_/g, '/');
+    const padLen = (4 - (clean.length % 4)) % 4;
+    const padded = clean + '='.repeat(padLen);
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const jsonStr = new TextDecoder().decode(bytes);
+    const parsed = JSON.parse(jsonStr);
+    if (!parsed || !Array.isArray(parsed.e) || parsed.e.length === 0) {
+      return null;
+    }
+    return parsed as CompactSharedDeckPayload;
+  } catch {
+    return null;
+  }
+}
+

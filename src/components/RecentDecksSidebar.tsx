@@ -1,17 +1,19 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   BookmarkPlus,
+  Check,
   Clock,
   Download,
   FileSpreadsheet,
   FolderOpen,
   History,
+  Share2,
   Sparkles,
   Trash2,
 } from 'lucide-react';
 import { useLanguage } from '../i18n/translations';
 import { DeckState } from '../types/ygo';
-import { calculateCraftingPoints, downloadYdkFile } from '../utils/ydk';
+import { buildShareableDeckUrl, calculateCraftingPoints, downloadYdkFile } from '../utils/ydk';
 import { exportDeckToExcel } from '../utils/excelExport';
 
 export interface RecentDeckRecord {
@@ -113,6 +115,21 @@ export const RecentDecksSidebar: React.FC<RecentDecksSidebarProps> = ({
 }) => {
   const { lang } = useLanguage();
   const isVi = lang === 'vi';
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopyDeckShareUrl = async (recordId: string, targetDeck: DeckState) => {
+    const shareUrl = buildShareableDeckUrl(targetDeck);
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      if (typeof window !== 'undefined') {
+        window.history.replaceState(null, '', shareUrl);
+      }
+      setCopiedId(recordId);
+      setTimeout(() => setCopiedId((prev) => (prev === recordId ? null : prev)), 2500);
+    } catch {
+      // Ignore clipboard error
+    }
+  };
 
   const formatSavedTime = (iso: string) => {
     try {
@@ -334,6 +351,29 @@ export const RecentDecksSidebar: React.FC<RecentDecksSidebarProps> = ({
                         ? 'Mở Lại Deck'
                         : 'Load Deck'}
                     </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleCopyDeckShareUrl(record.id, d)}
+                    title={
+                      isVi
+                        ? 'Sao chép liên kết chia sẻ bộ bài (Base64 URL)'
+                        : 'Copy shareable Base64 deck link'
+                    }
+                    className="min-h-[32px] px-2 py-1 rounded-lg bg-sky-500/15 border border-sky-500/40 hover:border-sky-400 text-sky-300 text-xs font-mono flex items-center gap-1"
+                  >
+                    {copiedId === record.id ? (
+                      <>
+                        <Check className="w-3 h-3 text-emerald-400" />
+                        <span>{isVi ? 'Đã chép' : 'Copied'}</span>
+                      </>
+                    ) : (
+                      <>
+                        <Share2 className="w-3 h-3" />
+                        <span>Link</span>
+                      </>
+                    )}
                   </button>
 
                   <button
