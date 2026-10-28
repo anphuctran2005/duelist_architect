@@ -1,0 +1,1456 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useMemo, useState } from 'react';
+import {
+  BookOpen,
+  ChevronDown,
+  ChevronUp,
+  Database,
+  Download,
+  Dices,
+  FileCode2,
+  FileSpreadsheet,
+  Globe,
+  Image as ImageIcon,
+  Languages,
+  Layers,
+  MessageSquare,
+  Plus,
+  RotateCcw,
+  Sparkles,
+  Trash2,
+  Wand2,
+  X,
+} from 'lucide-react';
+import { CardArtwork } from './components/CardArtwork';
+import { CardDatabaseView } from './components/CardDatabaseView';
+import { DuelistCoachDrawer } from './components/DuelistCoachDrawer';
+import { MasterDuelImportGuide } from './components/MasterDuelImportGuide';
+import { VisualStudioView } from './components/VisualStudioView';
+import { INITIAL_VISUAL_ASSETS, STARTER_DECKS } from './data/starterDecks';
+import {
+  AppLanguage,
+  LanguageContext,
+  PROMPT_SUGGESTIONS_I18N,
+  translateYgoEffectFallbackVi,
+} from './i18n/translations';
+import {
+  DeckEntry,
+  DeckState,
+  GeminiModelTier,
+  GeneratedVisualAsset,
+  SuggestedDeckChange,
+  WorkspaceTab,
+  YgoCard,
+} from './types/ygo';
+import {
+  calculateAtLeastOneProbability,
+  calculateCraftingPoints,
+  dealTestHand,
+  downloadYdkFile,
+  getMaxAllowedCopies,
+  isExtraDeckCard,
+} from './utils/ydk';
+import { exportDeckToExcel } from './utils/excelExport';
+
+export default function App() {
+  const [lang, setLang] = useState<AppLanguage>('vi');
+  const isVi = lang === 'vi';
+
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>('builder');
+  const [deck, setDeck] = useState<DeckState>(STARTER_DECKS[0]);
+  const [selectedEntry, setSelectedEntry] = useState<DeckEntry | null>(
+    STARTER_DECKS[0].entries[0] || null
+  );
+  const [rightDockMode, setRightDockMode] = useState<'inspector' | 'coach'>('coach');
+
+  // Mobile Bottom Sheets State (< 1024px)
+  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
+  const [mobileCoachOpen, setMobileCoachOpen] = useState(false);
+  const [mobilePromptCollapsed, setMobilePromptCollapsed] = useState(false);
+
+  // AI Deck Constructor Form State
+  const [promptInput, setPromptInput] = useState('');
+  const [playstyle, setPlaystyle] = useState('Competitive Midrange');
+  const [budgetTier, setBudgetTier] = useState('Competitive (No UR Limit)');
+  const [builderModel, setBuilderModel] = useState<GeminiModelTier>('gemini-4-argon');
+  const [isConstructingDeck, setIsConstructingDeck] = useState(false);
+  const [constructionStage, setConstructionStage] = useState('');
+  const [builderBannerNote, setBuilderBannerNote] = useState<string | null>(null);
+
+  // Workbench Interactive State
+  const [showCustomSleeves, setShowCustomSleeves] = useState(false);
+  const [testHand, setTestHand] = useState<YgoCard[] | null>(null);
+  const [visualAssets, setVisualAssets] = useState<GeneratedVisualAsset[]>(INITIAL_VISUAL_ASSETS);
+  const [isImportingYdk, setIsImportingYdk] = useState(false);
+
+  // On-demand Vietnamese card effect translations in the Card Inspector
+  const [translatedEffects, setTranslatedEffects] = useState<Record<number, string>>({});
+  const [isTranslatingCard, setIsTranslatingCard] = useState(false);
+
+  // Deck Metrics
+  const mainEntries = useMemo(
+    () => deck.entries.filter((e) => e.section === 'main'),
+    [deck.entries]
+  );
+  const extraEntries = useMemo(
+    () => deck.entries.filter((e) => e.section === 'extra'),
+    [deck.entries]
+  );
+
+  const mainCount = useMemo(
+    () => mainEntries.reduce((sum, e) => sum + e.quantity, 0),
+    [mainEntries]
+  );
+  const extraCount = useMemo(
+    () => extraEntries.reduce((sum, e) => sum + e.quantity, 0),
+    [extraEntries]
+  );
+
+  const starterCount = useMemo(
+    () =>
+      mainEntries
+        .filter((e) => e.role === 'Starter')
+        .reduce((sum, e) => sum + e.quantity, 0),
+    [mainEntries]
+  );
+
+  const handTrapCount = useMemo(
+    () =>
+      mainEntries
+        .filter((e) => e.role === 'Hand Trap')
+        .reduce((sum, e) => sum + e.quantity, 0),
+    [mainEntries]
+  );
+
+  const starterProbability = useMemo(
+    () => calculateAtLeastOneProbability(mainCount, starterCount, 5),
+    [mainCount, starterCount]
+  );
+
+  const { neededCP } = useMemo(() => calculateCraftingPoints(deck.entries), [deck.entries]);
+
+  const handleAdjustQuantity = (cardId: number, delta: number) => {
+    setDeck((prev) => {
+      const nextEntries: DeckEntry[] = [];
+      for (const entry of prev.entries) {
+        if (entry.card.id !== cardId) {
+          nextEntries.push(entry);
+          continue;
+        }
+        const maxAllowed = getMaxAllowedCopies(entry.card.banlistStatus);
+        const nextQty = entry.quantity + delta;
+        if (nextQty <= 0) {
+          if (selectedEntry?.card.id === cardId) {
+            setMobileInspectorOpen(false);
+          }
+          continue;
+        }
+        const clamped = Math.min(3, maxAllowed, nextQty) as 1 | 2 | 3;
+        const updated = { ...entry, quantity: clamped };
+        nextEntries.push(updated);
+        if (selectedEntry?.card.id === cardId) {
+          setSelectedEntry(updated);
+        }
+      }
+      return { ...prev, entries: nextEntries };
+    });
+  };
+
+  const handleAddCardToDeck = (card: YgoCard) => {
+    const maxAllowed = getMaxAllowedCopies(card.banlistStatus);
+    if (maxAllowed <= 0) return;
+
+    const section = isExtraDeckCard(card) ? 'extra' : 'main';
+    setDeck((prev) => {
+      const existing = prev.entries.find((e) => e.card.id === card.id);
+      if (existing) {
+        const nextQty = Math.min(3, maxAllowed, existing.quantity + 1) as 1 | 2 | 3;
+        return {
+          ...prev,
+          entries: prev.entries.map((e) =>
+            e.card.id === card.id ? { ...e, quantity: nextQty } : e
+          ),
+        };
+      }
+      const newEntry: DeckEntry = {
+        card,
+        quantity: 1,
+        section,
+        role: section === 'extra' ? 'Boss' : 'Engine',
+        reason: isVi
+          ? 'Được thêm thủ công từ cơ sở dữ liệu YGOPRODeck.'
+          : 'Added manually from the YGOPRODeck database.',
+      };
+      setSelectedEntry(newEntry);
+      return {
+        ...prev,
+        entries: [...prev.entries, newEntry],
+      };
+    });
+  };
+
+  const handleTranslateSelectedCard = async (card: YgoCard) => {
+    if (translatedEffects[card.id] || isTranslatingCard) return;
+    setIsTranslatingCard(true);
+    try {
+      const res = await fetch('/api/cards/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cardName: card.name, desc: card.desc }),
+      });
+      const data = await res.json();
+      const text = data.translatedDesc || translateYgoEffectFallbackVi(card.desc);
+      setTranslatedEffects((prev) => ({ ...prev, [card.id]: text }));
+    } catch {
+      setTranslatedEffects((prev) => ({
+        ...prev,
+        [card.id]: translateYgoEffectFallbackVi(card.desc),
+      }));
+    } finally {
+      setIsTranslatingCard(false);
+    }
+  };
+
+  const handleConstructDeck = async (customPrompt?: string) => {
+    const targetPrompt = (customPrompt ?? promptInput).trim();
+    if (!targetPrompt || isConstructingDeck) return;
+
+    setIsConstructingDeck(true);
+    setBuilderBannerNote(null);
+    setConstructionStage(
+      isVi
+        ? '01. Đang phân tích chiến thuật & xây dựng khung bài với Gemini...'
+        : '01. Architecting archetype ratios & engine lines with Gemini...'
+    );
+
+    const stageTimer = setTimeout(() => {
+      setConstructionStage(
+        isVi
+          ? '02. Đang xác thực mã Passcode 8 số & Banlist Master Duel từ YGOPRODeck...'
+          : '02. Resolving 8-digit Konami passcodes & Master Duel banlist via YGOPRODeck API...'
+      );
+    }, 1800);
+
+    try {
+      const response = await fetch('/api/deck/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: targetPrompt,
+          playstyle,
+          budgetTier,
+          preferredModel: builderModel,
+          lang,
+        }),
+      });
+      const data = await response.json();
+      if (data.deck && Array.isArray(data.deck.entries) && data.deck.entries.length > 0) {
+        const nextDeck: DeckState = {
+          ...data.deck,
+          customPlaymatUrl: deck.customPlaymatUrl,
+          customSleeveUrl: deck.customSleeveUrl,
+        };
+        setDeck(nextDeck);
+        setSelectedEntry(nextDeck.entries[0] || null);
+        setTestHand(null);
+        const totalCards = nextDeck.entries.reduce((s, e) => s + e.quantity, 0);
+        setBuilderBannerNote(
+          isVi
+            ? `Đã hoàn tất bộ bài "${nextDeck.name}" (${totalCards} lá xác thực qua YGOPRODeck · Engine: ${data.modelUsed}).`
+            : `Constructed "${nextDeck.name}" (${totalCards} cards verified via YGOPRODeck · Engine: ${data.modelUsed}).`
+        );
+      }
+    } catch (err: any) {
+      setBuilderBannerNote(err?.message || 'Deck construction encountered an error.');
+    } finally {
+      clearTimeout(stageTimer);
+      setIsConstructingDeck(false);
+      setConstructionStage('');
+    }
+  };
+
+  const handleApplyCoachChanges = async (changes: SuggestedDeckChange[]) => {
+    for (const chg of changes) {
+      if (chg.action === 'remove') {
+        setDeck((prev) => ({
+          ...prev,
+          entries: prev.entries.filter(
+            (e) => e.card.name.toLowerCase() !== chg.cardName.toLowerCase()
+          ),
+        }));
+      } else if (chg.action === 'add') {
+        try {
+          const res = await fetch(
+            `/api/cards/search?q=${encodeURIComponent(chg.cardName)}&limit=3`
+          );
+          const data = await res.json();
+          const card: YgoCard | undefined = data.cards?.[0];
+          if (card) {
+            const maxAllowed = getMaxAllowedCopies(card.banlistStatus);
+            const qty = Math.max(1, Math.min(3, maxAllowed, chg.quantity || 1)) as 1 | 2 | 3;
+            const section = isExtraDeckCard(card) ? 'extra' : 'main';
+            setDeck((prev) => {
+              const exists = prev.entries.find((e) => e.card.id === card.id);
+              if (exists) {
+                return {
+                  ...prev,
+                  entries: prev.entries.map((e) =>
+                    e.card.id === card.id
+                      ? {
+                          ...e,
+                          quantity: Math.min(3, maxAllowed, e.quantity + qty) as 1 | 2 | 3,
+                        }
+                      : e
+                  ),
+                };
+              }
+              return {
+                ...prev,
+                entries: [
+                  ...prev.entries,
+                  {
+                    card,
+                    quantity: qty,
+                    section,
+                    role: 'Tech',
+                    reason: chg.reason,
+                  },
+                ],
+              };
+            });
+          }
+        } catch {
+          // Ignore single card lookup error
+        }
+      }
+    }
+  };
+
+  const handleImportYdkPasscodes = async (
+    parsed: { mainIds: number[]; extraIds: number[]; sideIds: number[] },
+    fileName = 'Imported YDK Deck'
+  ) => {
+    const allIds = [...parsed.mainIds, ...parsed.extraIds, ...parsed.sideIds];
+    if (allIds.length === 0) return;
+
+    setIsImportingYdk(true);
+    try {
+      const response = await fetch('/api/cards/hydrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: allIds }),
+      });
+      const data = await response.json();
+      const cardMap: Record<number, YgoCard> = data.cards || {};
+
+      const countMap = new Map<
+        string,
+        { id: number; section: 'main' | 'extra' | 'side'; qty: number }
+      >();
+      const accumulate = (ids: number[], section: 'main' | 'extra' | 'side') => {
+        for (const id of ids) {
+          const key = `${section}-${id}`;
+          const prev = countMap.get(key);
+          if (prev) prev.qty = Math.min(3, prev.qty + 1);
+          else countMap.set(key, { id, section, qty: 1 });
+        }
+      };
+
+      accumulate(parsed.mainIds, 'main');
+      accumulate(parsed.extraIds, 'extra');
+      accumulate(parsed.sideIds, 'side');
+
+      const hydratedEntries: DeckEntry[] = [];
+      for (const item of countMap.values()) {
+        const card = cardMap[item.id];
+        if (!card) continue;
+        hydratedEntries.push({
+          card,
+          quantity: item.qty as 1 | 2 | 3,
+          section: item.section,
+          role: item.section === 'extra' ? 'Boss' : 'Engine',
+          reason: isVi ? 'Được nạp từ file mã .ydk.' : 'Imported from .ydk passcode file.',
+        });
+      }
+
+      if (hydratedEntries.length > 0) {
+        const importedDeck: DeckState = {
+          id: `imported-${Date.now()}`,
+          name: fileName,
+          archetype: hydratedEntries[0]?.card.archetype || 'Custom Imported List',
+          playstyle: 'Master Duel Constructed',
+          tierRating: 'Verified .YDK Import',
+          strategySummary: isVi
+            ? 'Được nạp trực tiếp từ mã Passcode .ydk và xác thực qua cơ sở dữ liệu YGOPRODeck Master Duel.'
+            : 'Imported directly from .ydk passcodes and validated against the live YGOPRODeck Master Duel database.',
+          comboGuide: deck.comboGuide,
+          entries: hydratedEntries,
+          customPlaymatUrl: deck.customPlaymatUrl,
+          customSleeveUrl: deck.customSleeveUrl,
+        };
+        setDeck(importedDeck);
+        setSelectedEntry(hydratedEntries[0]);
+        setActiveTab('builder');
+      }
+    } finally {
+      setIsImportingYdk(false);
+    }
+  };
+
+  return (
+    <LanguageContext.Provider value={{ lang, setLang }}>
+      <div className="min-h-screen flex flex-col bg-[#0B0F17] text-[#F1F5F9]">
+        {/* Strict 3-Zone Top Bar Contract (Compact 48px on Mobile, Full 3-Zone on Desktop) */}
+        <header className="sticky top-0 z-30 h-12 sm:h-14 flex items-center justify-between gap-4 sm:gap-8 px-4 sm:px-6 bg-[#0B0F17]/95 backdrop-blur border-b border-slate-800/90">
+          {/* Zone 1: Single-line Brand Wordmark */}
+          <a
+            href="#top"
+            onClick={(e) => {
+              e.preventDefault();
+              setActiveTab('builder');
+            }}
+            className="text-base sm:text-lg font-bold tracking-tight text-slate-100 font-display whitespace-nowrap shrink-0 hover:text-amber-300 transition-colors"
+          >
+            Duelist Architect
+          </a>
+
+          {/* Zone 2: 4 Concise Single-Line Navigation Links (Desktop md:flex; Mobile uses Fixed Bottom Tab Bar) */}
+          <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-300">
+            <button
+              type="button"
+              onClick={() => setActiveTab('builder')}
+              className={`py-1 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
+                activeTab === 'builder'
+                  ? 'border-amber-400 text-amber-300 font-semibold'
+                  : 'border-transparent hover:text-white'
+              }`}
+            >
+              {isVi ? 'Xây Dựng Deck' : 'Deck Builder'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('import_guide')}
+              className={`py-1 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
+                activeTab === 'import_guide'
+                  ? 'border-amber-400 text-amber-300 font-semibold'
+                  : 'border-transparent hover:text-white'
+              }`}
+            >
+              {isVi ? 'Hướng Dẫn Nhập' : 'Import Guide'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('visual_studio')}
+              className={`py-1 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
+                activeTab === 'visual_studio'
+                  ? 'border-amber-400 text-amber-300 font-semibold'
+                  : 'border-transparent hover:text-white'
+              }`}
+            >
+              {isVi ? 'Xưởng Hình Ảnh' : 'Visual Studio'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('database')}
+              className={`py-1 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
+                activeTab === 'database'
+                  ? 'border-amber-400 text-amber-300 font-semibold'
+                  : 'border-transparent hover:text-white'
+              }`}
+            >
+              {isVi ? 'Thư Viện Bài' : 'Card Database'}
+            </button>
+          </nav>
+
+          {/* Zone 3: 1 Primary Action Button */}
+          <div className="flex items-center shrink-0">
+            <button
+              type="button"
+              onClick={() => downloadYdkFile(deck)}
+              className="min-h-[36px] sm:min-h-[38px] px-3 sm:px-4 py-1.5 text-xs font-semibold text-slate-950 bg-amber-400 hover:bg-amber-300 active:scale-[0.98] rounded-lg transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{isVi ? 'Xuất File .YDK' : 'Export .YDK Deck'}</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Non-Sticky Sub-Header Workspace Toolbar with Vietnamese / English Language Switcher */}
+        <div className="bg-[#0E1422] border-b border-slate-800/70 px-4 sm:px-6 py-2">
+          <div className="max-w-[1400px] mx-auto flex items-center justify-between gap-3 text-xs">
+            <div className="text-slate-400 font-mono tabular-nums truncate">
+              {isVi
+                ? `${deck.name} · ${mainCount} Main / ${extraCount} Extra`
+                : `${deck.name} · ${mainCount} Main / ${extraCount} Extra`}
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => exportDeckToExcel(deck, lang, translatedEffects)}
+                className="min-h-[32px] px-2.5 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/40 hover:border-emerald-400 text-emerald-300 text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                <span>{isVi ? 'Xuất Excel (.xlsx)' : 'Export Excel (.xlsx)'}</span>
+              </button>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                <Globe className="w-3.5 h-3.5 text-amber-400 hidden sm:block" />
+                <div className="flex items-center gap-1 p-0.5 bg-slate-900 border border-slate-800 rounded-lg">
+                  <button
+                    type="button"
+                    onClick={() => setLang('vi')}
+                    className={`min-h-[32px] px-2.5 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                      lang === 'vi'
+                        ? 'bg-amber-400 text-slate-950 font-semibold'
+                        : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    Tiếng Việt
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLang('en')}
+                    className={`min-h-[32px] px-2.5 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                      lang === 'en'
+                        ? 'bg-amber-400 text-slate-950 font-semibold'
+                        : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    English
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Main Workspace Container (pb-24 on mobile for Fixed Bottom Tab Bar) */}
+        <main className="flex-1 pb-24 md:pb-8">
+          {activeTab === 'import_guide' && (
+            <MasterDuelImportGuide
+              deck={deck}
+              onImportYdkPasscodes={handleImportYdkPasscodes}
+              isImportingYdk={isImportingYdk}
+            />
+          )}
+
+          {activeTab === 'visual_studio' && (
+            <VisualStudioView
+              deck={deck}
+              assets={visualAssets}
+              onAddAsset={(newAsset) => setVisualAssets((prev) => [newAsset, ...prev])}
+              onApplySleeve={(url) => setDeck((prev) => ({ ...prev, customSleeveUrl: url }))}
+              onApplyPlaymat={(url) => setDeck((prev) => ({ ...prev, customPlaymatUrl: url }))}
+            />
+          )}
+
+          {activeTab === 'database' && (
+            <CardDatabaseView deck={deck} onAddCardToDeck={handleAddCardToDeck} />
+          )}
+
+          {activeTab === 'builder' && (
+            <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-5 sm:space-y-6">
+              {/* Top AI Natural Language Deck Constructor Panel (Collapsible on Mobile) */}
+              <section className="p-4 sm:p-6 rounded-2xl sm:rounded-xl bg-[#111827] border border-slate-800 space-y-4">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 sm:gap-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-1">
+                      <div className="text-[11px] sm:text-xs font-mono text-amber-400 tracking-wide">
+                        {isVi
+                          ? 'KIẾN TRÚC SƯ DECK MASTER DUEL AI · PASSCODE YGOPRODECK'
+                          : 'AI MASTER DUEL DECK ARCHITECT · LIVE YGOPRODECK VALIDATION'}
+                      </div>
+                      <h1 className="text-lg sm:text-2xl font-bold text-slate-100 font-display">
+                        {isVi
+                          ? 'Mô Tả Chiến Thuật, Tộc Bài Hoặc Ngân Sách CP'
+                          : 'Describe Your Strategy, Archetype, or Budget Goal'}
+                      </h1>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setMobilePromptCollapsed((v) => !v)}
+                      aria-label="Toggle AI Constructor Form"
+                      className="sm:hidden min-h-[40px] min-w-[40px] rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 shrink-0"
+                    >
+                      {mobilePromptCollapsed ? (
+                        <ChevronDown className="w-4 h-4" />
+                      ) : (
+                        <ChevronUp className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
+
+                  {/* Preset Meta Deck Quick-Load Switcher (Horizontal Touch Carousel on Mobile) */}
+                  <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+                    <span className="text-xs text-slate-400 whitespace-nowrap shrink-0">
+                      {isVi ? 'Deck Mẫu:' : 'Presets:'}
+                    </span>
+                    {STARTER_DECKS.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => {
+                          setDeck(preset);
+                          setSelectedEntry(preset.entries[0] || null);
+                          setTestHand(null);
+                          setBuilderBannerNote(null);
+                        }}
+                        className={`min-h-[38px] px-3 py-1.5 rounded-xl sm:rounded-lg text-xs font-medium border transition-colors whitespace-nowrap shrink-0 ${
+                          deck.id === preset.id
+                            ? 'bg-amber-400/15 border-amber-400 text-amber-300'
+                            : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-600'
+                        }`}
+                      >
+                        {preset.archetype}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className={mobilePromptCollapsed ? 'hidden sm:block space-y-4' : 'space-y-4'}>
+                  {/* Natural Language Input Row */}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleConstructDeck();
+                    }}
+                    className="grid grid-cols-1 lg:grid-cols-12 gap-2.5 sm:gap-3"
+                  >
+                    <div className="lg:col-span-6 relative">
+                      <input
+                        type="text"
+                        value={promptInput}
+                        onChange={(e) => setPromptInput(e.target.value)}
+                        placeholder={
+                          isVi
+                            ? 'VD: Xây dựng bộ bài Rồng Trắng Mắt Xanh Synchro, Tenpai Dragon đi sau OTK...'
+                            : 'e.g., Construct a going-second Tenpai Dragon Synchro OTK deck...'
+                        }
+                        className="w-full min-h-[44px] px-4 py-2.5 rounded-xl sm:rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 lg:col-span-4 gap-2.5">
+                      <select
+                        value={playstyle}
+                        onChange={(e) => setPlaystyle(e.target.value)}
+                        aria-label="Playstyle Focus"
+                        className="w-full min-h-[44px] px-3 py-2 rounded-xl sm:rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-200 focus:outline-none focus:border-amber-400"
+                      >
+                        <option value="Competitive Midrange">
+                          {isVi ? 'Công Thủ (Midrange)' : 'Midrange'}
+                        </option>
+                        <option value="Going-First Combo">
+                          {isVi ? 'Đi Trước (Combo)' : 'Going-First Combo'}
+                        </option>
+                        <option value="Going-Second OTK">
+                          {isVi ? 'Đi Sau (OTK)' : 'Going-Second OTK'}
+                        </option>
+                        <option value="Control & Trap">
+                          {isVi ? 'Kiểm Soát (Control)' : 'Control & Trap'}
+                        </option>
+                      </select>
+
+                      <select
+                        value={budgetTier}
+                        onChange={(e) => setBudgetTier(e.target.value)}
+                        aria-label="Crafting Point Budget"
+                        className="w-full min-h-[44px] px-3 py-2 rounded-xl sm:rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-200 focus:outline-none focus:border-amber-400"
+                      >
+                        <option value="Competitive (No UR Limit)">
+                          {isVi ? 'Tối Đa Sức Mạnh' : 'No UR Limit'}
+                        </option>
+                        <option value="Mid-Budget (Moderate UR)">
+                          {isVi ? 'Ngân Sách Vừa' : 'Balanced UR/SR'}
+                        </option>
+                        <option value="Low UR Budget (F2P Friendly)">
+                          {isVi ? 'Tiết Kiệm UR (F2P)' : 'Low UR Cost'}
+                        </option>
+                      </select>
+                    </div>
+
+                    <div className="lg:col-span-2">
+                      <button
+                        type="submit"
+                        disabled={isConstructingDeck || !promptInput.trim()}
+                        className="w-full min-h-[46px] h-full py-2.5 px-4 rounded-xl sm:rounded-lg bg-amber-400 hover:bg-amber-300 active:scale-[0.98] disabled:opacity-50 text-slate-950 font-semibold text-xs transition-all flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
+                      >
+                        <Wand2 className="w-4 h-4" />
+                        <span>
+                          {isConstructingDeck
+                            ? isVi
+                              ? 'Đang tạo...'
+                              : 'Building...'
+                            : isVi
+                            ? 'Tạo Bộ Bài AI'
+                            : 'Construct Deck'}
+                        </span>
+                      </button>
+                    </div>
+                  </form>
+
+                  {/* Quick Archetype Prompt Starters (Horizontal Touch Scroll on Mobile) */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-1">
+                    <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                      <span className="text-xs text-slate-400 whitespace-nowrap shrink-0 mr-1">
+                        {isVi ? 'Gợi ý:' : 'Prompts:'}
+                      </span>
+                      {PROMPT_SUGGESTIONS_I18N[lang].map((item) => (
+                        <button
+                          key={item.label}
+                          type="button"
+                          onClick={() => {
+                            setPromptInput(item.prompt);
+                            handleConstructDeck(item.prompt);
+                          }}
+                          disabled={isConstructingDeck}
+                          className="min-h-[34px] px-3 py-1 rounded-lg bg-slate-900 border border-slate-800 hover:border-amber-400/60 text-xs text-slate-300 hover:text-amber-200 transition-colors whitespace-nowrap shrink-0"
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-2 text-xs text-slate-400 font-mono shrink-0">
+                      <span>Model:</span>
+                      <select
+                        value={builderModel}
+                        onChange={(e) => setBuilderModel(e.target.value as GeminiModelTier)}
+                        aria-label="Architect Gemini Model"
+                        className="min-h-[34px] px-2 py-1 rounded-lg bg-slate-900 border border-slate-800 text-amber-300 text-xs focus:outline-none"
+                      >
+                        <option value="gemini-4-argon">gemini-4-argon</option>
+                        <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+                        <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {isConstructingDeck && (
+                  <div className="p-3.5 rounded-xl bg-slate-950 border border-amber-400/40 flex items-center gap-3 text-xs font-mono text-amber-300">
+                    <Sparkles className="w-4 h-4 animate-spin shrink-0" />
+                    <span>{constructionStage}</span>
+                  </div>
+                )}
+
+                {builderBannerNote && !isConstructingDeck && (
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-300">
+                    <span>{builderBannerNote}</span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('import_guide')}
+                      className="text-amber-300 font-semibold hover:underline text-left sm:text-right whitespace-nowrap shrink-0"
+                    >
+                      {isVi
+                        ? 'Xem Hướng Dẫn Nhập Vào Master Duel →'
+                        : 'Open Master Duel Import Guide →'}
+                    </button>
+                  </div>
+                )}
+              </section>
+
+              {/* 12-Column Tactical Workbench Split */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                <div className="lg:col-span-8 space-y-5 sm:space-y-6">
+                  {/* Active Deck Summary Bar */}
+                  <div className="p-4 sm:p-5 rounded-2xl sm:rounded-xl bg-[#111827] border border-slate-800 space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 pb-4 border-b border-slate-800/80">
+                      <div>
+                        <div className="text-xs font-mono text-slate-400 tabular-nums">
+                          {deck.archetype} · {deck.playstyle} · {deck.tierRating}
+                        </div>
+                        <h2 className="text-lg sm:text-xl font-bold text-slate-100 font-display mt-0.5">
+                          {deck.name}
+                        </h2>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setTestHand(dealTestHand(deck.entries, 5))}
+                          className="min-h-[42px] px-3 py-1.5 text-xs font-medium text-slate-200 bg-slate-900 border border-slate-700 rounded-xl sm:rounded-lg hover:border-amber-400 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 whitespace-nowrap"
+                        >
+                          <Dices className="w-3.5 h-3.5 text-amber-400" />
+                          <span>{isVi ? 'Rút Thử 5 Lá' : 'Test 5-Card Hand'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setShowCustomSleeves((v) => !v)}
+                          className="min-h-[42px] px-3 py-1.5 text-xs font-medium text-slate-200 bg-slate-900 border border-slate-700 rounded-xl sm:rounded-lg hover:border-amber-400 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 whitespace-nowrap"
+                        >
+                          <Layers className="w-3.5 h-3.5 text-amber-400" />
+                          <span>
+                            {showCustomSleeves
+                              ? isVi
+                                ? 'Hiện Mặt Trước'
+                                : 'Card Faces'
+                              : isVi
+                              ? 'Xem Bọc Bài'
+                              : 'Preview Sleeves'}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => exportDeckToExcel(deck, lang, translatedEffects)}
+                          className="min-h-[42px] px-3.5 py-1.5 text-xs font-semibold text-emerald-300 bg-emerald-500/15 border border-emerald-500/40 hover:bg-emerald-500/25 hover:border-emerald-400 active:scale-[0.98] rounded-xl sm:rounded-lg transition-all flex items-center justify-center gap-1.5 whitespace-nowrap"
+                        >
+                          <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>
+                            {isVi ? 'Xuất File Excel (.xlsx)' : 'Export Excel (.xlsx)'}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('import_guide')}
+                          className="min-h-[42px] px-3.5 py-1.5 text-xs font-semibold text-slate-950 bg-amber-400 hover:bg-amber-300 active:scale-[0.98] rounded-xl sm:rounded-lg transition-all whitespace-nowrap"
+                        >
+                          {isVi ? 'Cách Nhập Game' : 'How to Import'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <p className="text-xs text-slate-300 leading-relaxed">{deck.strategySummary}</p>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 pt-2 border-t border-slate-800/80 text-xs font-mono tabular-nums">
+                      <div>
+                        <span className="text-slate-400 block">
+                          {isVi ? 'Tổng Bài Main / Extra' : 'Main / Extra Deck'}
+                        </span>
+                        <span className="text-sm font-semibold text-slate-100">
+                          {mainCount} / 60 · {extraCount} / 15
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block">
+                          {isVi ? 'Tỉ Lệ Lên Starter' : 'Starter Consistency'}
+                        </span>
+                        <span className="text-sm font-semibold text-emerald-400">
+                          {starterProbability}% (5-Card)
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block">
+                          {isVi ? 'Số Lượng Hand Trap' : 'Non-Engine Hand Traps'}
+                        </span>
+                        <span className="text-sm font-semibold text-sky-300">
+                          {handTrapCount} {isVi ? 'Lá' : 'Cards'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block">
+                          {isVi ? 'Chi Phí Điểm UR / SR' : 'Total UR / SR Cost'}
+                        </span>
+                        <span className="text-sm font-semibold text-amber-300">
+                          {neededCP.UR} UR · {neededCP.SR} SR
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Interactive 5-Card Opening Hand Simulator */}
+                  {testHand && (
+                    <div className="p-4 sm:p-5 rounded-2xl sm:rounded-xl bg-[#111827] border border-amber-400/50 space-y-4">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-semibold text-slate-100">
+                            {isVi
+                              ? `Mô Phỏng Bài Mở Màn (${testHand.length} Lá Trên Tay)`
+                              : `Simulated Opening Hand (${testHand.length} Cards)`}
+                          </h3>
+                          <p className="text-xs text-slate-400">
+                            {isVi
+                              ? 'Chạm vào lá bài để xem chi tiết hoặc rút thêm lá thứ 6 khi Đi Sau.'
+                              : 'Tap any card to inspect its starter line or draw a 6th card.'}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setTestHand(dealTestHand(deck.entries, 6))}
+                            className="min-h-[40px] px-3 py-1.5 text-xs font-medium bg-slate-900 border border-slate-700 rounded-lg hover:border-amber-400 text-slate-200 whitespace-nowrap"
+                          >
+                            {isVi ? 'Rút Lá Thứ 6 (Đi Sau)' : 'Draw 6th Card'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setTestHand(dealTestHand(deck.entries, 5))}
+                            className="min-h-[40px] px-3 py-1.5 text-xs font-semibold bg-amber-400 text-slate-950 rounded-lg hover:bg-amber-300 flex items-center gap-1 whitespace-nowrap"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>{isVi ? 'Rút Lại' : 'Redraw'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setTestHand(null)}
+                            className="min-h-[40px] px-2.5 py-1.5 text-xs text-slate-400 hover:text-slate-200"
+                          >
+                            {isVi ? 'Đóng' : 'Close'}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2.5 sm:gap-3">
+                        {testHand.map((c, idx) => (
+                          <CardArtwork
+                            key={`${c.id}-${idx}`}
+                            card={c}
+                            onClick={() => {
+                              const found = deck.entries.find((e) => e.card.id === c.id);
+                              if (found) {
+                                setSelectedEntry(found);
+                                setRightDockMode('inspector');
+                                setMobileInspectorOpen(true);
+                              }
+                            }}
+                            compact
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Main Deck Visual Card Table */}
+                  <div className="relative rounded-2xl sm:rounded-xl overflow-hidden border border-slate-800 bg-[#0D1322] p-4 sm:p-5 space-y-3.5 sm:space-y-4">
+                    {deck.customPlaymatUrl && (
+                      <img
+                        src={deck.customPlaymatUrl}
+                        alt="Equipped Duel Field Playmat"
+                        referrerPolicy="no-referrer"
+                        className="absolute inset-0 w-full h-full object-cover opacity-20 pointer-events-none"
+                      />
+                    )}
+
+                    <div className="relative z-10 flex items-center justify-between gap-2">
+                      <div>
+                        <h3 className="text-xs sm:text-sm font-semibold text-slate-100 font-mono tabular-nums">
+                          {isVi
+                            ? `01. Main Deck (${mainCount} Lá · Chuẩn: 40–60)`
+                            : `01. Main Deck (${mainCount} Cards · Legal: 40–60)`}
+                        </h3>
+                        <p className="text-[11px] text-slate-400 sm:hidden">
+                          {isVi
+                            ? 'Chạm vào lá bài bất kỳ để xem hiệu ứng & chỉnh số lượng'
+                            : 'Tap any card to inspect & adjust quantity'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('database')}
+                        className="min-h-[36px] px-2.5 py-1 rounded-lg bg-slate-900/90 border border-slate-700 text-xs text-amber-400 hover:border-amber-400 flex items-center gap-1 whitespace-nowrap shrink-0"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>{isVi ? 'Thêm Bài' : 'Add Cards'}</span>
+                      </button>
+                    </div>
+
+                    <div className="relative z-10 grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 gap-2 sm:gap-3">
+                      {mainEntries.map((entry) => (
+                        <CardArtwork
+                          key={`main-${entry.card.id}`}
+                          card={entry.card}
+                          quantity={entry.quantity}
+                          selected={selectedEntry?.card.id === entry.card.id}
+                          showSleeveBack={showCustomSleeves}
+                          sleeveUrl={deck.customSleeveUrl}
+                          onClick={() => {
+                            setSelectedEntry(entry);
+                            setRightDockMode('inspector');
+                            setMobileInspectorOpen(true);
+                          }}
+                          onAdd={(e) => {
+                            e.stopPropagation();
+                            handleAdjustQuantity(entry.card.id, 1);
+                          }}
+                          onRemove={(e) => {
+                            e.stopPropagation();
+                            handleAdjustQuantity(entry.card.id, -1);
+                          }}
+                          compact
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Extra Deck Visual Card Table */}
+                  <div className="rounded-2xl sm:rounded-xl border border-slate-800 bg-[#0D1322] p-4 sm:p-5 space-y-3.5 sm:space-y-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-xs sm:text-sm font-semibold text-slate-100 font-mono tabular-nums">
+                        {isVi
+                          ? `02. Extra Deck (${extraCount} / 15 Lá · Fusion, Synchro, Xyz & Link)`
+                          : `02. Extra Deck (${extraCount} / 15 Cards)`}
+                      </h3>
+                    </div>
+
+                    <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 gap-2 sm:gap-3">
+                      {extraEntries.map((entry) => (
+                        <CardArtwork
+                          key={`extra-${entry.card.id}`}
+                          card={entry.card}
+                          quantity={entry.quantity}
+                          selected={selectedEntry?.card.id === entry.card.id}
+                          showSleeveBack={showCustomSleeves}
+                          sleeveUrl={deck.customSleeveUrl}
+                          onClick={() => {
+                            setSelectedEntry(entry);
+                            setRightDockMode('inspector');
+                            setMobileInspectorOpen(true);
+                          }}
+                          onAdd={(e) => {
+                            e.stopPropagation();
+                            handleAdjustQuantity(entry.card.id, 1);
+                          }}
+                          onRemove={(e) => {
+                            e.stopPropagation();
+                            handleAdjustQuantity(entry.card.id, -1);
+                          }}
+                          compact
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Step-by-Step Combo & Execution Guide */}
+                  {deck.comboGuide && deck.comboGuide.length > 0 && (
+                    <div className="p-4 sm:p-5 rounded-2xl sm:rounded-xl bg-[#111827] border border-slate-800 space-y-3">
+                      <div className="flex items-center gap-2">
+                        <BookOpen className="w-4 h-4 text-amber-400" />
+                        <h3 className="text-sm font-semibold text-slate-100">
+                          {isVi
+                            ? '03. Chuỗi Combo Cốt Lõi & Hướng Dẫn Vận Hành'
+                            : '03. Core Master Duel Combo Sequence & Playbook'}
+                        </h3>
+                      </div>
+                      <div className="divide-y divide-slate-800/80">
+                        {deck.comboGuide.map((step, idx) => (
+                          <div key={idx} className="py-2.5 text-xs text-slate-300 leading-relaxed">
+                            {step}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Desktop Right 4 Columns: Card Passcode Inspector & Multi-Turn Gemini Duelist Coach */}
+                <div className="hidden lg:block lg:col-span-4 space-y-4 sticky top-20">
+                  <div className="grid grid-cols-2 gap-1 p-1 bg-slate-900 border border-slate-800 rounded-lg">
+                    <button
+                      type="button"
+                      onClick={() => setRightDockMode('coach')}
+                      className={`py-2 px-3 rounded-md text-xs font-medium transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
+                        rightDockMode === 'coach'
+                          ? 'bg-amber-400 text-slate-950 font-semibold'
+                          : 'text-slate-300 hover:text-white'
+                      }`}
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>{isVi ? 'Cố Vấn Gemini' : 'Gemini Duelist Coach'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRightDockMode('inspector')}
+                      className={`py-2 px-3 rounded-md text-xs font-medium transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
+                        rightDockMode === 'inspector'
+                          ? 'bg-amber-400 text-slate-950 font-semibold'
+                          : 'text-slate-300 hover:text-white'
+                      }`}
+                    >
+                      <Layers className="w-3.5 h-3.5" />
+                      <span>{isVi ? 'Chi Tiết Lá Bài' : 'Card Inspector'}</span>
+                    </button>
+                  </div>
+
+                  {rightDockMode === 'coach' ? (
+                    <DuelistCoachDrawer
+                      deck={deck}
+                      onApplySuggestedChanges={handleApplyCoachChanges}
+                    />
+                  ) : selectedEntry ? (
+                    <div className="p-5 rounded-xl bg-[#111827] border border-slate-800 space-y-4">
+                      <div className="flex gap-4">
+                        <div className="w-28 shrink-0">
+                          <CardArtwork
+                            card={selectedEntry.card}
+                            quantity={selectedEntry.quantity}
+                          />
+                        </div>
+                        <div className="space-y-1.5 min-w-0">
+                          <div className="text-[11px] font-mono text-amber-400">
+                            {selectedEntry.role} ·{' '}
+                            {selectedEntry.section === 'extra' ? 'Extra Deck' : 'Main Deck'}
+                          </div>
+                          <h3 className="text-base font-bold text-slate-100 leading-snug">
+                            {selectedEntry.card.name}
+                          </h3>
+                          <div className="text-xs font-mono tabular-nums text-slate-400">
+                            {selectedEntry.card.mdRarity} · {selectedEntry.card.banlistStatus} · ID{' '}
+                            {selectedEntry.card.id}
+                          </div>
+                          <div className="text-xs text-slate-300">
+                            {selectedEntry.card.attribute
+                              ? `${selectedEntry.card.attribute} · `
+                              : ''}
+                            {selectedEntry.card.race} · {selectedEntry.card.type}
+                          </div>
+                          {typeof selectedEntry.card.atk === 'number' && (
+                            <div className="text-xs font-mono tabular-nums text-amber-300">
+                              ATK {selectedEntry.card.atk}
+                              {typeof selectedEntry.card.def === 'number'
+                                ? ` / DEF ${selectedEntry.card.def}`
+                                : selectedEntry.card.linkval
+                                ? ` / LINK-${selectedEntry.card.linkval}`
+                                : ''}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {selectedEntry.reason && (
+                        <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800 text-xs text-amber-200/90">
+                          <strong className="font-semibold text-amber-300">
+                            {isVi ? 'Vai trò chiến thuật:' : 'Tactical Role:'}
+                          </strong>{' '}
+                          {selectedEntry.reason}
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-slate-300">
+                          {isVi ? 'Hiệu Ứng Lá Bài' : 'Card Effect Text'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleTranslateSelectedCard(selectedEntry.card)}
+                          disabled={isTranslatingCard}
+                          className="text-xs text-amber-400 hover:underline flex items-center gap-1"
+                        >
+                          <Languages className="w-3.5 h-3.5" />
+                          <span>
+                            {translatedEffects[selectedEntry.card.id]
+                              ? isVi
+                                ? 'Đang hiển thị bản dịch Tiếng Việt'
+                                : 'Showing Vietnamese Translation'
+                              : isTranslatingCard
+                              ? isVi
+                                ? 'Đang dịch hiệu ứng...'
+                                : 'Translating...'
+                              : isVi
+                              ? 'Dịch Hiệu Ứng Sang Tiếng Việt'
+                              : 'Translate Effect to Vietnamese'}
+                          </span>
+                        </button>
+                      </div>
+
+                      <div className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-300 leading-relaxed max-h-60 overflow-y-auto whitespace-pre-wrap">
+                        {translatedEffects[selectedEntry.card.id] || selectedEntry.card.desc}
+                      </div>
+
+                      <div className="pt-2 border-t border-slate-800 flex items-center justify-between gap-2">
+                        <div className="text-xs font-mono tabular-nums text-slate-400">
+                          {isVi ? 'Số lượng' : 'Copies'}: {selectedEntry.quantity} /{' '}
+                          {getMaxAllowedCopies(selectedEntry.card.banlistStatus)}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleAdjustQuantity(selectedEntry.card.id, -1)}
+                            className="px-3 py-1.5 rounded bg-slate-900 border border-slate-700 hover:border-slate-500 text-xs font-mono text-slate-200"
+                          >
+                            {isVi ? '-1 Lá' : '-1 Copy'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleAdjustQuantity(selectedEntry.card.id, 1)}
+                            disabled={
+                              selectedEntry.quantity >=
+                              getMaxAllowedCopies(selectedEntry.card.banlistStatus)
+                            }
+                            className="px-3 py-1.5 rounded bg-amber-400 hover:bg-amber-300 disabled:opacity-40 text-xs font-mono font-semibold text-slate-950"
+                          >
+                            {isVi ? '+1 Lá' : '+1 Copy'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleAdjustQuantity(
+                                selectedEntry.card.id,
+                                -selectedEntry.quantity
+                              );
+                              setSelectedEntry(deck.entries[0] || null);
+                            }}
+                            title={isVi ? 'Xóa lá bài khỏi Deck' : 'Remove card from deck'}
+                            className="p-1.5 rounded bg-slate-900 border border-slate-700 hover:border-red-400 text-slate-400 hover:text-red-300"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          )}
+        </main>
+
+        {/* Mobile Bottom Sheet 1: Card Inspector & Quantity Adjuster (< 1024px) */}
+        {mobileInspectorOpen && selectedEntry && (
+          <div
+            className="fixed inset-0 z-50 lg:hidden bg-black/65 backdrop-blur-sm flex items-end"
+            onClick={() => setMobileInspectorOpen(false)}
+          >
+            <div
+              className="w-full max-h-[84vh] rounded-t-3xl bg-[#111827] border-t border-slate-700 p-4 pb-8 space-y-4 overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="w-10 h-1.5 bg-slate-700 rounded-full mx-auto" />
+
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex gap-3.5 min-w-0">
+                  <div className="w-20 shrink-0">
+                    <CardArtwork card={selectedEntry.card} quantity={selectedEntry.quantity} />
+                  </div>
+                  <div className="space-y-1 min-w-0">
+                    <div className="text-[11px] font-mono text-amber-400">
+                      {selectedEntry.role} ·{' '}
+                      {selectedEntry.section === 'extra' ? 'Extra Deck' : 'Main Deck'}
+                    </div>
+                    <h3 className="text-base font-bold text-slate-100 leading-snug">
+                      {selectedEntry.card.name}
+                    </h3>
+                    <div className="text-xs font-mono tabular-nums text-slate-400">
+                      {selectedEntry.card.mdRarity} · {selectedEntry.card.banlistStatus} · ID{' '}
+                      {selectedEntry.card.id}
+                    </div>
+                    {typeof selectedEntry.card.atk === 'number' && (
+                      <div className="text-xs font-mono tabular-nums text-amber-300">
+                        ATK {selectedEntry.card.atk}
+                        {typeof selectedEntry.card.def === 'number'
+                          ? ` / DEF ${selectedEntry.card.def}`
+                          : selectedEntry.card.linkval
+                          ? ` / LINK-${selectedEntry.card.linkval}`
+                          : ''}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setMobileInspectorOpen(false)}
+                  aria-label="Close card inspector"
+                  className="min-h-[44px] min-w-[44px] rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {selectedEntry.reason && (
+                <div className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 text-xs text-amber-200/90">
+                  <strong className="font-semibold text-amber-300">
+                    {isVi ? 'Vai trò:' : 'Role:'}
+                  </strong>{' '}
+                  {selectedEntry.reason}
+                </div>
+              )}
+
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-300">
+                  {isVi ? 'Hiệu Ứng Lá Bài' : 'Card Effect'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleTranslateSelectedCard(selectedEntry.card)}
+                  disabled={isTranslatingCard}
+                  className="min-h-[36px] px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 text-xs text-amber-400 flex items-center gap-1.5"
+                >
+                  <Languages className="w-3.5 h-3.5" />
+                  <span>
+                    {translatedEffects[selectedEntry.card.id]
+                      ? isVi
+                        ? 'Đã dịch Tiếng Việt'
+                        : 'Translated'
+                      : isVi
+                      ? 'Dịch sang Tiếng Việt'
+                      : 'Translate to VI'}
+                  </span>
+                </button>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 leading-relaxed max-h-44 overflow-y-auto whitespace-pre-wrap">
+                {translatedEffects[selectedEntry.card.id] || selectedEntry.card.desc}
+              </div>
+
+              {/* Thumb-Zone 48px Quantity & Removal Action Bar */}
+              <div className="pt-2 border-t border-slate-800 flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => handleAdjustQuantity(selectedEntry.card.id, -1)}
+                  className="flex-1 min-h-[48px] rounded-xl bg-slate-900 border border-slate-700 active:scale-[0.98] text-sm font-mono font-semibold text-slate-200"
+                >
+                  {isVi ? '-1 Bản Sao' : '-1 Copy'}
+                </button>
+                <div className="px-3 text-center font-mono tabular-nums text-xs text-slate-300">
+                  <div className="text-amber-300 font-bold text-sm">
+                    {selectedEntry.quantity} /{' '}
+                    {getMaxAllowedCopies(selectedEntry.card.banlistStatus)}
+                  </div>
+                  <div className="text-[10px] text-slate-400">{isVi ? 'Trong Deck' : 'Copies'}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleAdjustQuantity(selectedEntry.card.id, 1)}
+                  disabled={
+                    selectedEntry.quantity >=
+                    getMaxAllowedCopies(selectedEntry.card.banlistStatus)
+                  }
+                  className="flex-1 min-h-[48px] rounded-xl bg-amber-400 hover:bg-amber-300 active:scale-[0.98] disabled:opacity-40 text-sm font-mono font-bold text-slate-950"
+                >
+                  {isVi ? '+1 Bản Sao' : '+1 Copy'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleAdjustQuantity(selectedEntry.card.id, -selectedEntry.quantity);
+                    setMobileInspectorOpen(false);
+                  }}
+                  aria-label="Remove card from deck"
+                  className="min-h-[48px] min-w-[48px] rounded-xl bg-slate-900 border border-slate-700 text-red-400 flex items-center justify-center"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Mobile Bottom Sheet 2: Multi-Turn Gemini Duelist Coach Drawer (< 1024px) */}
+        {mobileCoachOpen && (
+          <div
+            className="fixed inset-0 z-50 lg:hidden bg-black/65 backdrop-blur-sm flex items-end"
+            onClick={() => setMobileCoachOpen(false)}
+          >
+            <div
+              className="w-full max-h-[88vh] rounded-t-3xl bg-[#111827] border-t border-slate-700 p-3 pb-6 space-y-2 overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between px-2 pt-1">
+                <div className="w-10 h-1.5 bg-slate-700 rounded-full mx-auto" />
+                <button
+                  type="button"
+                  onClick={() => setMobileCoachOpen(false)}
+                  aria-label="Close AI Coach"
+                  className="min-h-[36px] min-w-[36px] rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <DuelistCoachDrawer
+                deck={deck}
+                onApplySuggestedChanges={handleApplyCoachChanges}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Fixed Mobile Bottom Tab Bar (Thumb-Zone Navigation Anchor, md:hidden) */}
+        <nav
+          aria-label="Mobile Navigation"
+          className="fixed bottom-0 left-0 right-0 z-40 md:hidden h-14 bg-[#0B0F17]/95 backdrop-blur-md border-t border-slate-800 grid grid-cols-5 items-center pb-safe"
+        >
+          <button
+            type="button"
+            onClick={() => {
+              setMobileCoachOpen(false);
+              setActiveTab('builder');
+            }}
+            className={`min-h-[44px] flex flex-col items-center justify-center transition-colors ${
+              activeTab === 'builder' && !mobileCoachOpen ? 'text-amber-400' : 'text-slate-400'
+            }`}
+          >
+            <Layers className="w-5 h-5" />
+            <span className="text-[10px] font-medium tracking-tight mt-0.5 whitespace-nowrap">
+              {isVi ? 'Xây Deck' : 'Builder'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMobileCoachOpen((v) => !v)}
+            className={`min-h-[44px] flex flex-col items-center justify-center transition-colors ${
+              mobileCoachOpen ? 'text-amber-400' : 'text-slate-400'
+            }`}
+          >
+            <MessageSquare className="w-5 h-5" />
+            <span className="text-[10px] font-medium tracking-tight mt-0.5 whitespace-nowrap">
+              {isVi ? 'Cố Vấn AI' : 'AI Coach'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setMobileCoachOpen(false);
+              setActiveTab('import_guide');
+            }}
+            className={`min-h-[44px] flex flex-col items-center justify-center transition-colors ${
+              activeTab === 'import_guide' && !mobileCoachOpen
+                ? 'text-amber-400'
+                : 'text-slate-400'
+            }`}
+          >
+            <FileCode2 className="w-5 h-5" />
+            <span className="text-[10px] font-medium tracking-tight mt-0.5 whitespace-nowrap">
+              {isVi ? 'Nhập Game' : 'Import'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setMobileCoachOpen(false);
+              setActiveTab('visual_studio');
+            }}
+            className={`min-h-[44px] flex flex-col items-center justify-center transition-colors ${
+              activeTab === 'visual_studio' && !mobileCoachOpen
+                ? 'text-amber-400'
+                : 'text-slate-400'
+            }`}
+          >
+            <ImageIcon className="w-5 h-5" />
+            <span className="text-[10px] font-medium tracking-tight mt-0.5 whitespace-nowrap">
+              {isVi ? 'Hình Ảnh' : 'Studio'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setMobileCoachOpen(false);
+              setActiveTab('database');
+            }}
+            className={`min-h-[44px] flex flex-col items-center justify-center transition-colors ${
+              activeTab === 'database' && !mobileCoachOpen ? 'text-amber-400' : 'text-slate-400'
+            }`}
+          >
+            <Database className="w-5 h-5" />
+            <span className="text-[10px] font-medium tracking-tight mt-0.5 whitespace-nowrap">
+              {isVi ? 'Thư Viện' : 'Cards'}
+            </span>
+          </button>
+        </nav>
+      </div>
+    </LanguageContext.Provider>
+  );
+}

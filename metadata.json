@@ -1,0 +1,6 @@
+{
+  "name": "Duelist Architect — Master Duel Deck Builder & Visual Studio",
+  "description": "Construct tournament-legal Yu-Gi-Oh! Master Duel decks from natural language descriptions, validate passcodes via live YGOPRODeck data, export .ydk, Excel handbooks, and Neuron-ready lists, consult a tactical strategy coach, and generate 1K/2K/4K custom sleeves, playmats, and card art.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
